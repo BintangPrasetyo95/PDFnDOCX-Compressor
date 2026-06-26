@@ -112,8 +112,9 @@ btnRemove.addEventListener('click', resetAll);
 
 function handleFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
-  if (!['pdf', 'docx'].includes(ext)) {
-    alert('Please select a PDF or DOCX file.');
+  const imageExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif'];
+  if (!['pdf', 'docx', ...imageExts].includes(ext)) {
+    alert('Please select a PDF, DOCX, or supported Image file.');
     return;
   }
   state.file = file;
@@ -125,14 +126,19 @@ function handleFile(file) {
   if (ext === 'pdf') {
     fileTypeLabel.textContent    = 'PDF';
     fileIconWrap.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
-    fileIconWrap.classList.remove('docx');
-  } else {
+    fileIconWrap.className = 'file-icon-wrap';
+  } else if (ext === 'docx') {
     fileTypeLabel.textContent    = 'DOCX';
     fileIconWrap.style.background = 'linear-gradient(135deg, #2563eb, #06b6d4)';
-    fileIconWrap.classList.add('docx');
+    fileIconWrap.className = 'file-icon-wrap docx';
+  } else {
+    fileTypeLabel.textContent    = ext.toUpperCase();
+    fileIconWrap.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+    fileIconWrap.className = 'file-icon-wrap';
   }
 
   dropzone.classList.add('hidden');
+  document.getElementById('supportedFormats').classList.add('hidden');
   fileInfoBar.classList.remove('hidden');
   settingsPanel.classList.remove('hidden');
   progressPanel.classList.add('hidden');
@@ -163,6 +169,13 @@ async function startCompression() {
   metricTarget.textContent   = formatBytes(state.targetBytes);
   setProgress(0, 'Reading file...');
 
+  // Reset progress stats values
+  document.getElementById('progressIteration').textContent = '0';
+  document.getElementById('progressQuality').textContent = '95';
+  document.getElementById('progressScale').textContent = '100%';
+  document.getElementById('progressImagesCount').textContent = '0';
+  document.getElementById('progressTimeRemaining').textContent = 'Calculating...';
+
   const reader = new FileReader();
   reader.onload = async (e) => {
     state.fileBytes = new Uint8Array(e.target.result);
@@ -171,23 +184,31 @@ async function startCompression() {
       addLogEntry(0, 'File already at or below target size', state.originalSize, 'success');
       state.resultBlob = new Blob([state.fileBytes], { type: state.file.type });
       showResult(state.originalSize, 0, 0);
+      triggerDownload();
       return;
     }
 
     const ext = state.file.name.split('.').pop().toLowerCase();
+    const imageExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif'];
     try {
       let resultBlob;
       if (ext === 'pdf') {
         resultBlob = await compressPDF(state.fileBytes, state.targetBytes);
-      } else {
+      } else if (ext === 'docx') {
         resultBlob = await compressDOCX(state.fileBytes, state.targetBytes);
+      } else if (imageExts.includes(ext)) {
+        resultBlob = await compressImageFile(state.fileBytes, state.targetBytes);
+      } else {
+        throw new Error('Unsupported file format');
       }
+      
       state.resultBlob = resultBlob;
       showResult(
         resultBlob.size,
         state.iterations,
         ((state.originalSize - resultBlob.size) / state.originalSize * 100)
       );
+      triggerDownload();
     } catch (err) {
       console.error(err);
       progressLabel.textContent = '❌ Error: ' + err.message;
@@ -233,10 +254,16 @@ async function compressPDF(inputBytes, targetBytes) {
   const totalPages  = pdfDoc.numPages;
 
   addLogEntry(0, `PDF has ${totalPages} page(s)`, inputBytes.byteLength, 'info');
+  document.getElementById('progressImagesCount').textContent = totalPages + ' pages';
 
   while (iteration < maxIter) {
     iteration++;
     state.iterations = iteration;
+
+    // Update real-time progress panel stats
+    document.getElementById('progressIteration').textContent = iteration;
+    document.getElementById('progressQuality').textContent = Math.round(quality * 100);
+    document.getElementById('progressScale').textContent = Math.round(scale * 100) + '%';
 
     const pct = 5 + (iteration / maxIter) * 85;
     setProgress(pct, `Pass #${iteration} — scale: ${scale.toFixed(2)}, Q${Math.round(quality * 100)}%`);
@@ -303,6 +330,11 @@ async function compressPDF(inputBytes, targetBytes) {
     );
     updateMetrics(byteCount);
 
+    // Update Est. Time Remaining (mock calculation based on iteration count vs maxIter)
+    const elapsed = 0; // simplistic visual cue for PDF
+    const remainingSteps = maxIter - iteration;
+    document.getElementById('progressTimeRemaining').textContent = byteCount <= targetBytes ? 'Done' : `~${remainingSteps * 2}s`;
+
     // ── Target met → return immediately ──
     if (byteCount <= targetBytes) {
       setProgress(100, '✓ Target reached!');
@@ -337,78 +369,78 @@ async function compressPDF(inputBytes, targetBytes) {
 
 // ── DOCX Compression ──────────────────────────────────────────────────────────
 /**
- * Unzips DOCX, re-compresses every embedded image at decreasing JPEG quality,
- * re-zips with DEFLATE level 9. Tracks best result and always returns it.
- *
- * Quality range: 0.82 → 0.01
+ * Unzips DOCX, re-compresses every embedded image at decreasing JPEG quality and dimensions,
+ * according to the specified quality and scale ladders.
  */
 async function compressDOCX(inputBytes, targetBytes) {
-  const mode       = document.querySelector('input[name="mode"]:checked').value;
-  let quality      = mode === 'aggressive' ? 0.65 : 0.82;
-  // imgScale: shrinks pixel dimensions of images (1.0 = full size, 0.1 = 10% size)
-  let imgScale     = 1.0;
+  const qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
+  const scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
 
-  // ▼ Much lower floors — push all the way down
-  const minQuality  = 0.01;
-  const minImgScale = 0.05; // 5% of original pixels — brutally small but it works
-  const maxIter     = 30;
-
-  let iteration    = 0;
-  let bestBytes    = null;
-  let bestBuffer   = null;
+  let qualityIdx = 0;
+  let scaleIdx = 0;
 
   addLogEntry(0, 'Unzipping DOCX archive...', inputBytes.byteLength, 'info');
-  setProgress(8, 'Reading DOCX structure...');
+  setProgress(5, 'Reading DOCX structure...');
 
   const zip = await JSZip.loadAsync(inputBytes);
 
-  // Gather image file keys from all Office media folders
+  // Locate word/media/* and process only supported extensions (jpg, jpeg, png, webp, bmp, tif, tiff)
+  // Skipping SVG, EMF, WMF, icons, and unsupported image formats.
   const imgKeys = Object.keys(zip.files).filter(name => {
     const lower = name.toLowerCase();
-    return (
-      lower.includes('/media/') ||
-      lower.startsWith('word/media/') ||
-      lower.startsWith('ppt/media/') ||
-      lower.startsWith('xl/media/')
-    ) && !zip.files[name].dir;
+    return lower.startsWith('word/media/') &&
+           !zip.files[name].dir &&
+           /\.(jpg|jpeg|png|webp|bmp|tif|tiff)$/.test(lower);
   });
 
   addLogEntry(0, `Found ${imgKeys.length} embedded image(s)`, inputBytes.byteLength, 'info');
+  document.getElementById('progressImagesCount').textContent = imgKeys.length;
 
-  // Pre-read all original image ArrayBuffers once
+  // Pre-read all original image ArrayBuffers once to prevent degradation across iterations
   const origImgData = {};
   for (const key of imgKeys) {
     origImgData[key] = await zip.file(key).async('arraybuffer');
   }
 
-  while (iteration < maxIter) {
+  let bestBytes = null;
+  let bestBuffer = null;
+  let iteration = 0;
+
+  const totalSteps = qualityLadder.length + scaleLadder.length - 1;
+  const startTime = Date.now();
+
+  while (true) {
     iteration++;
     state.iterations = iteration;
 
-    const pct = 8 + (iteration / maxIter) * 82;
-    setProgress(pct, `Pass #${iteration} — image quality: ${Math.round(quality * 100)}%`);
+    const currentQuality = qualityLadder[qualityIdx];
+    const currentScale = scaleLadder[scaleIdx];
+
+    // Update real-time progress panel stats
+    document.getElementById('progressIteration').textContent = iteration;
+    document.getElementById('progressQuality').textContent = currentQuality;
+    document.getElementById('progressScale').textContent = Math.round(currentScale * 100) + '%';
+
+    // Calculate progress percentage
+    const progressPct = 5 + ((qualityIdx + scaleIdx) / totalSteps) * 90;
+    setProgress(progressPct, `Pass #${iteration} — Quality: ${currentQuality}, Scale: ${Math.round(currentScale * 100)}%`);
 
     // Fresh copy of the zip for this pass
     const freshZip = await JSZip.loadAsync(inputBytes);
 
-    // Re-compress each image at current quality
-    for (const key of imgKeys) {
-      const lower = key.toLowerCase();
-      const data  = origImgData[key];
-
-      // Skip tiny decorative images (< 2 KB)
-      if (data.byteLength < 2048) continue;
-
-      const isPng       = lower.endsWith('.png');
-      // Pass both quality AND imgScale — this is what makes truly small files possible
-      const recompressed = await recompressImage(data, quality, isPng, imgScale);
+    // Recompress every image
+    const recompressPromises = imgKeys.map(async (key) => {
+      const data = origImgData[key];
+      const recompressed = await recompressImage(data, currentQuality / 100, currentScale);
       if (recompressed) {
         freshZip.file(key, recompressed, {
           compression: 'DEFLATE',
           compressionOptions: { level: 9 },
         });
       }
-    }
+    });
+
+    await Promise.all(recompressPromises);
 
     // Generate the new ZIP
     const resultBuffer = await freshZip.generateAsync({
@@ -419,73 +451,75 @@ async function compressDOCX(inputBytes, targetBytes) {
 
     const byteCount = resultBuffer.byteLength;
 
-    // ── Track best ──
+    // Track best result
     if (bestBytes === null || byteCount < bestBytes) {
       bestBytes  = byteCount;
       bestBuffer = resultBuffer;
     }
 
-    const status = byteCount <= targetBytes ? 'success' : 'pass';
-    addLogEntry(iteration, `Q${Math.round(quality * 100)}% · img ${Math.round(imgScale * 100)}%px`, byteCount, status);
+    const isSuccess = byteCount <= targetBytes;
+    const status = isSuccess ? 'success' : 'pass';
+    addLogEntry(iteration, `Quality: ${currentQuality} · Scale: ${Math.round(currentScale * 100)}%`, byteCount, status);
     updateMetrics(byteCount);
 
-    if (byteCount <= targetBytes) {
+    // Measure time and calculate Est. Time Remaining
+    const elapsed = Date.now() - startTime;
+    const avgTimePerIter = elapsed / iteration;
+    const remainingSteps = totalSteps - (qualityIdx + scaleIdx);
+    const estTimeRemainingMs = remainingSteps * avgTimePerIter;
+    
+    let timeStr = '0s';
+    if (estTimeRemainingMs > 0) {
+      const totalSec = Math.ceil(estTimeRemainingMs / 1000);
+      if (totalSec >= 60) {
+        timeStr = `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`;
+      } else {
+        timeStr = `${totalSec}s`;
+      }
+    }
+    document.getElementById('progressTimeRemaining').textContent = isSuccess ? 'Done' : timeStr;
+
+    if (isSuccess) {
       setProgress(100, '✓ Target reached!');
       return new Blob([resultBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
     }
 
-    // ── Reduce quality AND pixel dimensions for next pass ──
-    const ratio = byteCount / targetBytes;
-    if (ratio > 5) {
-      quality  = Math.max(minQuality,  quality  - 0.30);
-      imgScale = Math.max(minImgScale, imgScale - 0.30);
-    } else if (ratio > 3) {
-      quality  = Math.max(minQuality,  quality  - 0.20);
-      imgScale = Math.max(minImgScale, imgScale - 0.20);
-    } else if (ratio > 2) {
-      quality  = Math.max(minQuality,  quality  - 0.12);
-      imgScale = Math.max(minImgScale, imgScale - 0.12);
-    } else if (ratio > 1.5) {
-      quality  = Math.max(minQuality,  quality  - 0.08);
-      imgScale = Math.max(minImgScale, imgScale - 0.08);
-    } else if (ratio > 1.2) {
-      quality  = Math.max(minQuality,  quality  - 0.05);
-      imgScale = Math.max(minImgScale, imgScale - 0.04);
+    // Compression loop step update: quality reaches 1, then scale reduces.
+    if (currentQuality > 1) {
+      qualityIdx++;
+    } else if (currentScale > 0.01) {
+      scaleIdx++;
     } else {
-      quality  = Math.max(minQuality,  quality  - 0.03);
-      imgScale = Math.max(minImgScale, imgScale - 0.02);
+      // quality = 1 and scale = 1% reached
+      break;
     }
 
-    if (quality <= minQuality && imgScale <= minImgScale) {
-      addLogEntry(iteration, '⚠ Absolute minimum reached — returning best result', bestBytes, 'fail');
-      setProgress(100, 'Minimum compression limit reached.');
-      return new Blob([bestBuffer], {
-        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      });
-    }
-
-    await sleep(10);
+    await sleep(20);
   }
 
-  setProgress(100, 'Max passes done — returning best result.');
-  addLogEntry(iteration, 'Max iterations — returning best result', bestBytes, 'fail');
-  return new Blob([bestBuffer || inputBytes], {
+  setProgress(100, 'Minimum quality and scale reached.');
+  addLogEntry(iteration, '⚠ Absolute minimum reached — returning best result', bestBytes, 'fail');
+  document.getElementById('progressTimeRemaining').textContent = 'Finished';
+  return new Blob([bestBuffer], {
     type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
 }
 
 // ── Image Re-compression via Canvas ──────────────────────────────────────────
-// scaleDown: 0.0–1.0 multiplier on pixel dimensions (1.0 = original, 0.1 = 10%)
-async function recompressImage(arrayBuffer, quality, isPng, scaleDown = 1.0) {
+/**
+ * Loads image binary data into an HTML Canvas.
+ * Automatically removes metadata.
+ * Flattens transparency onto a white background when converting PNG to JPEG.
+ */
+async function recompressImage(arrayBuffer, quality, scaleDown = 1.0) {
   return new Promise((resolve) => {
     const blob = new Blob([arrayBuffer]);
     const url  = URL.createObjectURL(blob);
     const img  = new Image();
 
     img.onload = () => {
-      // Clamp so canvas is never 0px
       const w = Math.max(1, Math.round(img.naturalWidth  * scaleDown));
       const h = Math.max(1, Math.round(img.naturalHeight * scaleDown));
 
@@ -494,20 +528,17 @@ async function recompressImage(arrayBuffer, quality, isPng, scaleDown = 1.0) {
       canvas.height = h;
       const ctx     = canvas.getContext('2d');
 
-      // White background for transparent PNGs before JPEG conversion
-      if (isPng) {
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, w, h);
-      }
-
-      // drawImage with explicit dest dimensions performs the downscale
+      // Flatten transparency onto white background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
       ctx.drawImage(img, 0, 0, w, h);
       URL.revokeObjectURL(url);
 
+      // Save as JPEG to satisfy flattening/quality compression requirements
       canvas.toBlob(
-        (resultBlob) => {
-          if (!resultBlob) { resolve(null); return; }
-          resultBlob.arrayBuffer().then(buf => resolve(new Uint8Array(buf)));
+        (jpegBlob) => {
+          if (!jpegBlob) { resolve(null); return; }
+          jpegBlob.arrayBuffer().then(buf => resolve(new Uint8Array(buf)));
         },
         'image/jpeg',
         quality
@@ -551,17 +582,25 @@ function showResult(finalSize, iterations, reductionPct) {
 }
 
 // ── Download ──────────────────────────────────────────────────────────────────
-btnDownload.addEventListener('click', () => {
+function triggerDownload() {
   if (!state.resultBlob) return;
   const url  = URL.createObjectURL(state.resultBlob);
   const a    = document.createElement('a');
-  const ext  = state.file.name.split('.').pop().toLowerCase();
+  let ext    = state.file.name.split('.').pop().toLowerCase();
   const base = state.file.name.replace(/\.[^.]+$/, '');
+  
+  const imageExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif'];
+  if (imageExts.includes(ext)) {
+    ext = 'jpg';
+  }
+  
   a.href     = url;
-  a.download = `${base}_compressed.${ext}`;
+  a.download = `${base}-compressed.${ext}`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
-});
+}
+
+btnDownload.addEventListener('click', triggerDownload);
 
 // ── Reset ─────────────────────────────────────────────────────────────────────
 btnReset.addEventListener('click', resetAll);
@@ -579,8 +618,101 @@ function resetAll() {
   progressFill.style.width = '0%';
 
   dropzone.classList.remove('hidden');
+  document.getElementById('supportedFormats').classList.remove('hidden');
   fileInfoBar.classList.add('hidden');
   settingsPanel.classList.add('hidden');
   progressPanel.classList.add('hidden');
   resultPanel.classList.add('hidden');
 }
+
+// ── Image Compression ──────────────────────────────────────────────────────────
+async function compressImageFile(inputBytes, targetBytes) {
+  const qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
+  const scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
+
+  let qualityIdx = 0;
+  let scaleIdx = 0;
+
+  addLogEntry(0, 'Loading image file...', inputBytes.byteLength, 'info');
+  setProgress(10, 'Processing image...');
+  document.getElementById('progressImagesCount').textContent = '1 image';
+
+  let bestBytes = null;
+  let bestBlob = null;
+  let iteration = 0;
+
+  const totalSteps = qualityLadder.length + scaleLadder.length - 1;
+  const startTime = Date.now();
+
+  while (true) {
+    iteration++;
+    state.iterations = iteration;
+
+    const currentQuality = qualityLadder[qualityIdx];
+    const currentScale = scaleLadder[scaleIdx];
+
+    // Update real-time progress panel stats
+    document.getElementById('progressIteration').textContent = iteration;
+    document.getElementById('progressQuality').textContent = currentQuality;
+    document.getElementById('progressScale').textContent = Math.round(currentScale * 100) + '%';
+
+    // Calculate progress percentage
+    const progressPct = 10 + ((qualityIdx + scaleIdx) / totalSteps) * 85;
+    setProgress(progressPct, `Pass #${iteration} — Quality: ${currentQuality}, Scale: ${Math.round(currentScale * 100)}%`);
+
+    // Compress raw image to JPEG blob using canvas
+    const compressedBytes = await recompressImage(inputBytes, currentQuality / 100, currentScale);
+    const compressedBlob = new Blob([compressedBytes], { type: 'image/jpeg' });
+    const byteCount = compressedBlob.size;
+
+    // Track best result
+    if (bestBytes === null || byteCount < bestBytes) {
+      bestBytes = byteCount;
+      bestBlob = compressedBlob;
+    }
+
+    const isSuccess = byteCount <= targetBytes;
+    const status = isSuccess ? 'success' : 'pass';
+    addLogEntry(iteration, `Quality: ${currentQuality} · Scale: ${Math.round(currentScale * 100)}%`, byteCount, status);
+    updateMetrics(byteCount);
+
+    // Measure time and calculate Est. Time Remaining
+    const elapsed = Date.now() - startTime;
+    const avgTimePerIter = elapsed / iteration;
+    const remainingSteps = totalSteps - (qualityIdx + scaleIdx);
+    const estTimeRemainingMs = remainingSteps * avgTimePerIter;
+    
+    let timeStr = '0s';
+    if (estTimeRemainingMs > 0) {
+      const totalSec = Math.ceil(estTimeRemainingMs / 1000);
+      if (totalSec >= 60) {
+        timeStr = `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`;
+      } else {
+        timeStr = `${totalSec}s`;
+      }
+    }
+    document.getElementById('progressTimeRemaining').textContent = isSuccess ? 'Done' : timeStr;
+
+    if (isSuccess) {
+      setProgress(100, '✓ Target reached!');
+      return bestBlob;
+    }
+
+    // Compression loop step update: quality reaches 1, then scale reduces.
+    if (currentQuality > 1) {
+      qualityIdx++;
+    } else if (currentScale > 0.01) {
+      scaleIdx++;
+    } else {
+      break;
+    }
+
+    await sleep(20);
+  }
+
+  setProgress(100, 'Minimum quality and scale reached.');
+  addLogEntry(iteration, '⚠ Absolute minimum reached — returning best result', bestBytes, 'fail');
+  document.getElementById('progressTimeRemaining').textContent = 'Finished';
+  return bestBlob;
+}
+

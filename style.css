@@ -98,7 +98,6 @@ body {
   align-items: center;
   justify-content: center;
   padding: 9px;
-  box-shadow: 0 4px 20px rgba(245,168,0,0.5);
   position: relative;
   overflow: hidden;
 }
@@ -190,7 +189,6 @@ body {
 .dropzone:hover, .dropzone.drag-over {
   border-color: var(--accent2);
   background: linear-gradient(135deg, rgba(245,168,0,0.10), rgba(255,218,0,0.07));
-  box-shadow: 0 0 40px rgba(245,168,0,0.2);
   transform: translateY(-1px);
 }
 
@@ -227,7 +225,6 @@ body {
   justify-content: center;
   padding: 14px;
   margin-bottom: 8px;
-  box-shadow: 0 8px 32px rgba(245,168,0,0.5);
   position: relative;
   overflow: hidden;
 }
@@ -270,11 +267,9 @@ body {
   font-weight: 700;
   cursor: pointer;
   transition: all var(--transition);
-  box-shadow: 0 4px 20px rgba(245,168,0,0.45);
 }
 .btn-upload:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 30px rgba(245,168,0,0.6);
 }
 
 /* ── File Info Bar ── */
@@ -480,7 +475,6 @@ body {
   justify-content: center;
   gap: 10px;
   transition: all var(--transition);
-  box-shadow: 0 6px 30px rgba(245,168,0,0.5);
   letter-spacing: 0.02em;
   position: relative;
   overflow: hidden;
@@ -502,7 +496,6 @@ body {
 .btn-compress:hover::before { opacity: 1; }
 .btn-compress:hover {
   transform: translateY(-2px);
-  box-shadow: 0 10px 40px rgba(245,168,0,0.65);
   background: linear-gradient(135deg, #ffcc00, #f5a800);
 }
 .btn-compress:active { transform: translateY(0); }
@@ -562,7 +555,6 @@ body {
   background-size: 20px 100%;
   border-radius: 999px;
   transition: width 0.4s ease;
-  box-shadow: 0 0 14px rgba(245,168,0,0.6);
   animation: beeStripeMove 0.6s linear infinite;
 }
 @keyframes beeStripeMove {
@@ -726,7 +718,6 @@ body {
   align-items: center;
   gap: 8px;
   transition: all var(--transition);
-  box-shadow: 0 6px 28px rgba(245,168,0,0.45);
   position: relative;
   overflow: hidden;
 }
@@ -745,7 +736,7 @@ body {
   transition: opacity var(--transition);
 }
 .btn-download:hover::before { opacity: 1; }
-.btn-download:hover { transform: translateY(-2px); box-shadow: 0 10px 36px rgba(245,168,0,0.6); }
+.btn-download:hover { transform: translateY(-2px); }
 
 .btn-secondary {
   padding: 13px 24px;

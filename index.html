@@ -57,7 +57,7 @@
           </svg>
         </div>
         <p class="drop-title">Drop your file here</p>
-        <p class="drop-sub">PDF or DOCX · Up to 200 MB</p>
+        <p class="drop-sub">PDF, DOCX, or Image · Up to 200 MB</p>
         <label class="btn-upload" for="fileInput" id="uploadLabel">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
@@ -66,7 +66,21 @@
           </svg>
           Browse File
         </label>
-        <input type="file" id="fileInput" accept=".pdf,.docx" hidden />
+        <input type="file" id="fileInput" accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff" hidden />
+      </div>
+    </div>
+
+    <!-- Supported Formats list -->
+    <div id="supportedFormats" class="supported-formats" style="margin-top: 20px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+      <span style="font-size: 0.85rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">Supported Formats</span>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #ef4444;">PDF</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(37, 99, 235, 0.1); border: 1px solid rgba(37, 99, 235, 0.2); color: #3b82f6;">DOCX</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">JPG / JPEG</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">PNG</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">WEBP</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">BMP</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">TIFF / TIF</span>
       </div>
     </div>
 
@@ -152,6 +166,30 @@
         <div class="progress-fill" id="progressFill" style="width:0%"></div>
       </div>
 
+      <!-- Real-time Stats Grid -->
+      <div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px;">
+        <div class="stat-pill">
+          <span class="stat-label">Iteration</span>
+          <span class="stat-val" id="progressIteration">0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">JPEG Quality</span>
+          <span class="stat-val" id="progressQuality">95</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Scale</span>
+          <span class="stat-val" id="progressScale">100%</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Images Count</span>
+          <span class="stat-val" id="progressImagesCount">0</span>
+        </div>
+        <div class="stat-pill" style="grid-column: span 2;">
+          <span class="stat-label">Est. Time Remaining</span>
+          <span class="stat-val" id="progressTimeRemaining" style="color: var(--yellow);">Calculating...</span>
+        </div>
+      </div>
+
       <div class="iteration-log" id="iterationLog">
         <!-- Log entries injected here -->
       </div>
@@ -177,6 +215,7 @@
         </div>
       </div>
     </div>
+
 
     <!-- Result Panel -->
     <div id="resultPanel" class="result-panel hidden">
