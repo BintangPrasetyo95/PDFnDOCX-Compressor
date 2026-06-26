@@ -143,20 +143,70 @@ function handleFile(file) {
   settingsPanel.classList.remove('hidden');
   progressPanel.classList.add('hidden');
   resultPanel.classList.add('hidden');
+
+  // Set original size visual target card
+  document.getElementById('visualOrigSize').textContent = formatBytes(file.size);
+  updateVisualTarget();
+
+  // Ensure settings view is correct based on default mode (normal)
+  const targetSizeGroup = document.getElementById('targetSizeGroup');
+  const visualFlow = document.querySelector('.target-visual-flow');
+  const activeMode = document.querySelector('input[name="mode"]:checked').value;
+  const isNormal = activeMode === 'normal';
+
+  if (isNormal) {
+    targetSizeGroup.classList.add('locked');
+    visualFlow.classList.add('locked');
+  } else {
+    targetSizeGroup.classList.remove('locked');
+    visualFlow.classList.remove('locked');
+  }
+  targetSizeInput.disabled = isNormal;
+  targetUnitSel.disabled = isNormal;
 }
+
+// Mode radio buttons visibility toggler
+document.querySelectorAll('input[name="mode"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    const targetSizeGroup = document.getElementById('targetSizeGroup');
+    const visualFlow = document.querySelector('.target-visual-flow');
+    const isNormal = e.target.value === 'normal';
+
+    if (isNormal) {
+      targetSizeGroup.classList.add('locked');
+      visualFlow.classList.add('locked');
+    } else {
+      targetSizeGroup.classList.remove('locked');
+      visualFlow.classList.remove('locked');
+    }
+    targetSizeInput.disabled = isNormal;
+    targetUnitSel.disabled = isNormal;
+  });
+});
+
+function updateVisualTarget() {
+  const targetVal = parseFloat(targetSizeInput.value) || 0;
+  const unit = targetUnitSel.value;
+  document.getElementById('visualTargetSize').textContent = targetVal.toFixed(1) + ' ' + unit;
+}
+
+targetSizeInput.addEventListener('input', updateVisualTarget);
+targetUnitSel.addEventListener('change', updateVisualTarget);
 
 btnCompress.addEventListener('click', startCompression);
 
 // ── Main Compression Entry ────────────────────────────────────────────────────
 async function startCompression() {
+  const mode = document.querySelector('input[name="mode"]:checked').value;
   const targetVal = parseFloat(targetSizeInput.value);
-  if (isNaN(targetVal) || targetVal <= 0) {
+  
+  if (mode !== 'normal' && (isNaN(targetVal) || targetVal <= 0)) {
     alert('Please enter a valid target size greater than 0.');
     return;
   }
 
   const unit        = targetUnitSel.value;
-  state.targetBytes = unit === 'MB' ? targetVal * 1024 * 1024 : targetVal * 1024;
+  state.targetBytes = mode === 'normal' ? 0 : (unit === 'MB' ? targetVal * 1024 * 1024 : targetVal * 1024);
   state.iterations  = 0;
 
   settingsPanel.classList.add('hidden');
@@ -166,12 +216,12 @@ async function startCompression() {
 
   metricOriginal.textContent = formatBytes(state.originalSize);
   metricCurrent.textContent  = formatBytes(state.originalSize);
-  metricTarget.textContent   = formatBytes(state.targetBytes);
+  metricTarget.textContent   = mode === 'normal' ? 'N/A' : formatBytes(state.targetBytes);
   setProgress(0, 'Reading file...');
 
   // Reset progress stats values
   document.getElementById('progressIteration').textContent = '0';
-  document.getElementById('progressQuality').textContent = '95';
+  document.getElementById('progressQuality').textContent = '80';
   document.getElementById('progressScale').textContent = '100%';
   document.getElementById('progressImagesCount').textContent = '0';
   document.getElementById('progressTimeRemaining').textContent = 'Calculating...';
@@ -180,7 +230,7 @@ async function startCompression() {
   reader.onload = async (e) => {
     state.fileBytes = new Uint8Array(e.target.result);
 
-    if (state.originalSize <= state.targetBytes) {
+    if (mode !== 'normal' && state.originalSize <= state.targetBytes) {
       addLogEntry(0, 'File already at or below target size', state.originalSize, 'success');
       state.resultBlob = new Blob([state.fileBytes], { type: state.file.type });
       showResult(state.originalSize, 0, 0);
@@ -232,12 +282,20 @@ async function compressPDF(inputBytes, targetBytes) {
   }
 
   const mode      = document.querySelector('input[name="mode"]:checked').value;
-  let scale       = mode === 'aggressive' ? 1.2 : 1.5;
-  let quality     = mode === 'aggressive' ? 0.70 : 0.85;
+  let scale       = mode === 'normal' ? 1.0 : (mode === 'aggressive' ? 1.1 : 1.3);
+  let quality     = mode === 'normal' ? 0.85 : (mode === 'aggressive' ? 0.65 : 0.75);
 
-  // ▼ These are now MUCH lower — the engine will push all the way down
-  const minScale    = 0.10;
-  const minQuality  = 0.01;
+  let minScale, minQuality;
+  if (mode === 'normal') {
+    minScale = 0.70;
+    minQuality = 0.50;
+  } else if (mode === 'balanced') {
+    minScale = 0.30;
+    minQuality = 0.15;
+  } else {
+    minScale = 0.10;
+    minQuality = 0.01;
+  }
   // Hard cap on canvas pixel width at minimum scale (prevents huge canvases on large PDFs)
   const maxPxWidth  = 1800; // at first pass; shrinks proportionally with scale
   const maxIter     = 30;
@@ -335,9 +393,10 @@ async function compressPDF(inputBytes, targetBytes) {
     const remainingSteps = maxIter - iteration;
     document.getElementById('progressTimeRemaining').textContent = byteCount <= targetBytes ? 'Done' : `~${remainingSteps * 2}s`;
 
-    // ── Target met → return immediately ──
-    if (byteCount <= targetBytes) {
-      setProgress(100, '✓ Target reached!');
+    // ── Target met or normal mode → return immediately ──
+    if (mode === 'normal' || byteCount <= targetBytes) {
+      setProgress(100, '✓ Compression complete!');
+      document.getElementById('progressTimeRemaining').textContent = 'Done';
       return new Blob([pdfBytes], { type: 'application/pdf' });
     }
 
@@ -373,8 +432,17 @@ async function compressPDF(inputBytes, targetBytes) {
  * according to the specified quality and scale ladders.
  */
 async function compressDOCX(inputBytes, targetBytes) {
-  const qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
-  const scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  let qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
+  let scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
+
+  if (mode === 'normal') {
+    qualityLadder = qualityLadder.filter(q => q >= 50);
+    scaleLadder = scaleLadder.filter(s => s >= 0.70);
+  } else if (mode === 'balanced') {
+    qualityLadder = qualityLadder.filter(q => q >= 20);
+    scaleLadder = scaleLadder.filter(s => s >= 0.30);
+  }
 
   let qualityIdx = 0;
   let scaleIdx = 0;
@@ -479,8 +547,9 @@ async function compressDOCX(inputBytes, targetBytes) {
     }
     document.getElementById('progressTimeRemaining').textContent = isSuccess ? 'Done' : timeStr;
 
-    if (isSuccess) {
-      setProgress(100, '✓ Target reached!');
+    if (mode === 'normal' || isSuccess) {
+      setProgress(100, '✓ Compression complete!');
+      document.getElementById('progressTimeRemaining').textContent = 'Done';
       return new Blob([resultBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
@@ -555,7 +624,8 @@ function showResult(finalSize, iterations, reductionPct) {
   progressPanel.classList.add('hidden');
   resultPanel.classList.remove('hidden');
 
-  const targetMet = finalSize <= state.targetBytes;
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  const targetMet = mode === 'normal' || finalSize <= state.targetBytes;
 
   resultIcon.className = 'result-icon ' + (targetMet ? 'success' : 'warning');
   resultIcon.innerHTML = targetMet
@@ -572,9 +642,11 @@ function showResult(finalSize, iterations, reductionPct) {
     ? '🎉 Compression Complete!'
     : '⚠️ Maximum Compression Reached';
 
-  resultDesc.textContent = targetMet
-    ? `Your file was compressed to ${formatBytes(finalSize)}, meeting the target of ${formatBytes(state.targetBytes)}.`
-    : `This file cannot be reduced to ${formatBytes(state.targetBytes)} — it is the absolute smallest possible. The content itself (text, images) sets a hard floor.`;
+  resultDesc.textContent = mode === 'normal'
+    ? `Your file was successfully optimized to ${formatBytes(finalSize)} using standard compression.`
+    : (targetMet
+        ? `Your file was compressed to ${formatBytes(finalSize)}, meeting the target of ${formatBytes(state.targetBytes)}.`
+        : `This file cannot be reduced to ${formatBytes(state.targetBytes)} — it is the absolute smallest possible. The content itself (text, images) sets a hard floor.`);
 
   statFinalSize.textContent  = formatBytes(finalSize);
   statReduction.textContent  = reductionPct.toFixed(1) + '%';
@@ -627,8 +699,17 @@ function resetAll() {
 
 // ── Image Compression ──────────────────────────────────────────────────────────
 async function compressImageFile(inputBytes, targetBytes) {
-  const qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
-  const scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  let qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
+  let scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
+
+  if (mode === 'normal') {
+    qualityLadder = qualityLadder.filter(q => q >= 50);
+    scaleLadder = scaleLadder.filter(s => s >= 0.70);
+  } else if (mode === 'balanced') {
+    qualityLadder = qualityLadder.filter(q => q >= 20);
+    scaleLadder = scaleLadder.filter(s => s >= 0.30);
+  }
 
   let qualityIdx = 0;
   let scaleIdx = 0;

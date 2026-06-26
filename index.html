@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐝</text></svg>">
 </head>
 <body>
 
@@ -104,7 +105,7 @@
     <div id="settingsPanel" class="settings-panel hidden">
 
       <div class="settings-row">
-        <div class="setting-group">
+        <div class="setting-group" id="targetSizeGroup">
           <label class="setting-label" for="targetSize">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px">
               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
@@ -118,6 +119,28 @@
               <option value="KB">KB</option>
             </select>
           </div>
+          <div class="target-visual-flow">
+            <div class="visual-card visual-orig">
+              <span class="visual-file-icon">📄</span>
+              <span class="visual-file-label">Your File</span>
+              <span class="visual-file-size" id="visualOrigSize">10.0 MB</span>
+            </div>
+            <div class="visual-connector">
+              <div class="visual-line"></div>
+              <div class="visual-engine-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px">
+                  <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+                  <line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>
+                </svg>
+                <span>Shrinking to</span>
+              </div>
+            </div>
+            <div class="visual-card visual-target">
+              <span class="visual-file-icon">🐝</span>
+              <span class="visual-file-label">Desired Size</span>
+              <span class="visual-file-size" id="visualTargetSize">1.0 MB</span>
+            </div>
+          </div>
           <p class="setting-hint">The engine will compress repeatedly until your file is at or below this size.</p>
         </div>
 
@@ -129,14 +152,19 @@
             Compression Mode
           </label>
           <div class="mode-options">
+            <label class="mode-card" id="modeNormal">
+              <input type="radio" name="mode" value="normal" checked />
+              <span class="mode-title">Normal</span>
+              <span class="mode-desc">Average compress, minor loss</span>
+            </label>
             <label class="mode-card" id="modeBalanced">
-              <input type="radio" name="mode" value="balanced" checked />
-              <span class="mode-title">Balanced</span>
+              <input type="radio" name="mode" value="balanced" />
+              <span class="mode-title">Balanced <span class="mode-badge">Target</span></span>
               <span class="mode-desc">Good quality, smaller size</span>
             </label>
             <label class="mode-card" id="modeAggressive">
               <input type="radio" name="mode" value="aggressive" />
-              <span class="mode-title">Aggressive</span>
+              <span class="mode-title">Aggressive <span class="mode-badge">Target</span></span>
               <span class="mode-desc">Maximum compression</span>
             </label>
           </div>
