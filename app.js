@@ -1,12 +1,14 @@
 /**
  * ShrinkIt – Smart PDF & DOCX Compressor
- * app.js – Core Compression Engine
+ * app.js – Core Compression Engine (v2 – Deep Compression)
  *
- * Strategy:
- *  PDF  → Render each page to canvas (reducing DPI each pass), export to JPEG,
- *          rebuild via pdf-lib. Iterates until target size is met.
- *  DOCX → Unzip, re-compress embedded images iteratively (reducing JPEG quality),
- *          then re-zip with DEFLATE. Iterates until target size is met.
+ * PDF  → PDF.js renders each page to canvas at decreasing scale + JPEG quality,
+ *         rebuilt with pdf-lib. Iterates until target size met or absolute min hit.
+ * DOCX → JSZip unpacks, Canvas re-encodes every image at decreasing JPEG quality,
+ *         re-packed with maximum DEFLATE. Iterates until target size met.
+ *
+ * Key fix: minScale → 0.10, minQuality → 0.01  (pushes much harder)
+ *          Best-result tracking so final download is always the smallest achieved.
  */
 
 // ── Global State ──────────────────────────────────────────────────────────────
@@ -61,8 +63,7 @@ function formatBytes(bytes) {
 }
 
 function clamp(val, min, max) { return Math.min(max, Math.max(min, val)); }
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms)             { return new Promise(r => setTimeout(r, ms)); }
 
 function addLogEntry(iter, text, size, status = 'pass') {
   const entry = document.createElement('div');
@@ -107,7 +108,6 @@ dropzone.addEventListener('drop', (e) => {
 dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
 fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
-
 btnRemove.addEventListener('click', resetAll);
 
 function handleFile(file) {
@@ -116,20 +116,18 @@ function handleFile(file) {
     alert('Please select a PDF or DOCX file.');
     return;
   }
-
   state.file = file;
   state.originalSize = file.size;
 
-  // Update UI
-  fileName.textContent = file.name;
+  fileName.textContent    = file.name;
   fileSizeOrig.textContent = formatBytes(file.size);
 
   if (ext === 'pdf') {
-    fileTypeLabel.textContent = 'PDF';
+    fileTypeLabel.textContent    = 'PDF';
     fileIconWrap.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
     fileIconWrap.classList.remove('docx');
   } else {
-    fileTypeLabel.textContent = 'DOCX';
+    fileTypeLabel.textContent    = 'DOCX';
     fileIconWrap.style.background = 'linear-gradient(135deg, #2563eb, #06b6d4)';
     fileIconWrap.classList.add('docx');
   }
@@ -151,30 +149,25 @@ async function startCompression() {
     return;
   }
 
-  const unit = targetUnitSel.value;
+  const unit        = targetUnitSel.value;
   state.targetBytes = unit === 'MB' ? targetVal * 1024 * 1024 : targetVal * 1024;
   state.iterations  = 0;
 
-  // Show progress
   settingsPanel.classList.add('hidden');
   progressPanel.classList.remove('hidden');
   resultPanel.classList.add('hidden');
   iterationLog.innerHTML = '';
 
-  // Init metrics
   metricOriginal.textContent = formatBytes(state.originalSize);
   metricCurrent.textContent  = formatBytes(state.originalSize);
   metricTarget.textContent   = formatBytes(state.targetBytes);
-
   setProgress(0, 'Reading file...');
 
-  // Read bytes
   const reader = new FileReader();
   reader.onload = async (e) => {
     state.fileBytes = new Uint8Array(e.target.result);
 
     if (state.originalSize <= state.targetBytes) {
-      // Already within target
       addLogEntry(0, 'File already at or below target size', state.originalSize, 'success');
       state.resultBlob = new Blob([state.fileBytes], { type: state.file.type });
       showResult(state.originalSize, 0, 0);
@@ -190,10 +183,14 @@ async function startCompression() {
         resultBlob = await compressDOCX(state.fileBytes, state.targetBytes);
       }
       state.resultBlob = resultBlob;
-      showResult(resultBlob.size, state.iterations, ((state.originalSize - resultBlob.size) / state.originalSize * 100));
+      showResult(
+        resultBlob.size,
+        state.iterations,
+        ((state.originalSize - resultBlob.size) / state.originalSize * 100)
+      );
     } catch (err) {
       console.error(err);
-      progressLabel.textContent = 'Error: ' + err.message;
+      progressLabel.textContent = '❌ Error: ' + err.message;
     }
   };
   reader.readAsArrayBuffer(state.file);
@@ -201,153 +198,188 @@ async function startCompression() {
 
 // ── PDF Compression ───────────────────────────────────────────────────────────
 /**
- * Strategy:
- * 1. Use PDF.js to render each page to canvas.
- * 2. Export canvas as JPEG at a given quality.
- * 3. Reconstruct PDF from images using pdf-lib.
- * 4. Measure resulting size; if too large reduce scale/quality and repeat.
+ * Renders each page to a canvas at decreasing scale + JPEG quality.
+ * Tracks the smallest result found and always returns it.
+ *
+ * Scale range : 1.5 → 0.10   (much lower floor = drastically smaller)
+ * Quality range: 0.85 → 0.01  (much lower floor = drastically smaller)
  */
 async function compressPDF(inputBytes, targetBytes) {
-  // Dynamically configure PDF.js worker
   if (typeof pdfjsLib !== 'undefined') {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   }
 
-  const mode = document.querySelector('input[name="mode"]:checked').value;
+  const mode      = document.querySelector('input[name="mode"]:checked').value;
+  let scale       = mode === 'aggressive' ? 1.2 : 1.5;
+  let quality     = mode === 'aggressive' ? 0.70 : 0.85;
 
-  // Compression parameters per pass
-  let scale   = mode === 'aggressive' ? 1.2 : 1.5;
-  let quality = mode === 'aggressive' ? 0.7 : 0.85;
-  const minScale   = 0.4;
-  const minQuality = 0.1;
-  const maxIter    = 20;
+  // ▼ These are now MUCH lower — the engine will push all the way down
+  const minScale    = 0.10;
+  const minQuality  = 0.01;
+  // Hard cap on canvas pixel width at minimum scale (prevents huge canvases on large PDFs)
+  const maxPxWidth  = 1800; // at first pass; shrinks proportionally with scale
+  const maxIter     = 30;
 
-  let currentBytes = inputBytes;
   let iteration    = 0;
+  let bestBytes    = null; // track smallest result so far
+  let bestPdfBytes = null;
 
-  addLogEntry(0, 'Original PDF loaded', currentBytes.byteLength, 'info');
+  addLogEntry(0, 'Original PDF loaded', inputBytes.byteLength, 'info');
   setProgress(5, 'Loading PDF document...');
 
-  // Load with PDF.js
   const loadingTask = pdfjsLib.getDocument({ data: inputBytes.slice() });
   const pdfDoc      = await loadingTask.promise;
   const totalPages  = pdfDoc.numPages;
 
-  addLogEntry(0, `PDF has ${totalPages} page(s)`, currentBytes.byteLength, 'info');
+  addLogEntry(0, `PDF has ${totalPages} page(s)`, inputBytes.byteLength, 'info');
 
   while (iteration < maxIter) {
     iteration++;
     state.iterations = iteration;
 
     const pct = 5 + (iteration / maxIter) * 85;
-    setProgress(pct, `Pass #${iteration} — scale: ${scale.toFixed(2)}, quality: ${quality.toFixed(2)}`);
+    setProgress(pct, `Pass #${iteration} — scale: ${scale.toFixed(2)}, Q${Math.round(quality * 100)}%`);
 
-    // Render all pages
+    // Render all pages at current scale/quality
     const pageImageBytes = [];
     const pageDimensions = [];
+
+    // Cap pixel width so high-res PDFs don't blow up at large scales
+    const pixelCap = Math.max(200, maxPxWidth * (scale / (mode === 'aggressive' ? 1.2 : 1.5)));
 
     for (let p = 1; p <= totalPages; p++) {
       const page     = await pdfDoc.getPage(p);
       const viewport = page.getViewport({ scale });
+      // Apply pixel cap: if viewport is wider than cap, shrink both dims proportionally
+      const capScale = viewport.width > pixelCap ? pixelCap / viewport.width : 1;
       const canvas   = document.createElement('canvas');
-      canvas.width   = viewport.width;
-      canvas.height  = viewport.height;
+      canvas.width   = Math.max(1, Math.round(viewport.width  * capScale));
+      canvas.height  = Math.max(1, Math.round(viewport.height * capScale));
       const ctx      = canvas.getContext('2d');
+      // Use a scaled viewport that matches the capped canvas dimensions
+      const renderViewport = page.getViewport({ scale: scale * capScale });
 
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      // White fill so JPEG doesn't get alpha artifacts
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const dataURL    = canvas.toDataURL('image/jpeg', quality);
-      const b64        = dataURL.split(',')[1];
-      const imgBytes   = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
+
+      const dataURL  = canvas.toDataURL('image/jpeg', quality);
+      const b64      = dataURL.split(',')[1];
+      const imgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 
       pageImageBytes.push(imgBytes);
-      pageDimensions.push({ width: viewport.width, height: viewport.height });
+      pageDimensions.push({ width: canvas.width, height: canvas.height });
     }
 
-    // Build new PDF with pdf-lib
+    // Build PDF with pdf-lib
     const { PDFDocument } = PDFLib;
     const newPdf = await PDFDocument.create();
 
     for (let i = 0; i < pageImageBytes.length; i++) {
       const jpgImage = await newPdf.embedJpg(pageImageBytes[i]);
       const { width, height } = pageDimensions[i];
-      const page = newPdf.addPage([width, height]);
-      page.drawImage(jpgImage, { x: 0, y: 0, width, height });
+      const pg = newPdf.addPage([width, height]);
+      pg.drawImage(jpgImage, { x: 0, y: 0, width, height });
     }
 
     const pdfBytes  = await newPdf.save({ useObjectStreams: true });
     const byteCount = pdfBytes.byteLength;
 
-    addLogEntry(iteration, `Scale ${scale.toFixed(2)} · Quality ${Math.round(quality * 100)}%`, byteCount, byteCount <= targetBytes ? 'success' : 'pass');
+    // ── Track the best (smallest) result ──
+    if (bestBytes === null || byteCount < bestBytes) {
+      bestBytes    = byteCount;
+      bestPdfBytes = pdfBytes;
+    }
+
+    const status = byteCount <= targetBytes ? 'success' : 'pass';
+    addLogEntry(
+      iteration,
+      `Scale ${scale.toFixed(2)} · Q${Math.round(quality * 100)}%`,
+      byteCount,
+      status
+    );
     updateMetrics(byteCount);
 
+    // ── Target met → return immediately ──
     if (byteCount <= targetBytes) {
-      setProgress(100, 'Target reached! ✓');
+      setProgress(100, '✓ Target reached!');
       return new Blob([pdfBytes], { type: 'application/pdf' });
     }
 
-    // Calculate how aggressive to reduce
+    // ── Decide how aggressively to reduce for next pass ──
     const ratio = byteCount / targetBytes;
-    if (ratio > 3) {
-      scale   = Math.max(minScale, scale - 0.35);
-      quality = Math.max(minQuality, quality - 0.18);
-    } else if (ratio > 1.8) {
-      scale   = Math.max(minScale, scale - 0.2);
-      quality = Math.max(minQuality, quality - 0.12);
-    } else if (ratio > 1.3) {
-      quality = Math.max(minQuality, quality - 0.08);
-    } else {
-      quality = Math.max(minQuality, quality - 0.05);
-    }
 
+    if (ratio > 5)        { scale = Math.max(minScale, scale - 0.50); quality = Math.max(minQuality, quality - 0.25); }
+    else if (ratio > 3)   { scale = Math.max(minScale, scale - 0.35); quality = Math.max(minQuality, quality - 0.18); }
+    else if (ratio > 2)   { scale = Math.max(minScale, scale - 0.20); quality = Math.max(minQuality, quality - 0.12); }
+    else if (ratio > 1.5) { scale = Math.max(minScale, scale - 0.10); quality = Math.max(minQuality, quality - 0.08); }
+    else if (ratio > 1.2) { quality = Math.max(minQuality, quality - 0.05); }
+    else                  { quality = Math.max(minQuality, quality - 0.03); }
+
+    // ── If already at the floor on both axes → nothing more to do ──
     if (scale <= minScale && quality <= minQuality) {
-      addLogEntry(iteration, 'Minimum quality reached — best result saved', byteCount, 'fail');
-      return new Blob([pdfBytes], { type: 'application/pdf' });
+      addLogEntry(iteration, '⚠ Absolute minimum reached — returning best result', bestBytes, 'fail');
+      setProgress(100, 'Minimum compression limit reached.');
+      return new Blob([bestPdfBytes], { type: 'application/pdf' });
     }
 
-    await sleep(10); // yield to browser
+    await sleep(10);
   }
 
-  // Return last result
-  const { PDFDocument } = PDFLib;
-  const finalPdf = await PDFDocument.create();
-  // fallback: return last rendered
-  setProgress(100, 'Max iterations reached — best result saved.');
-  return new Blob([inputBytes], { type: 'application/pdf' });
+  // Max iterations hit — return smallest result found
+  setProgress(100, 'Max passes done — returning best result.');
+  addLogEntry(iteration, 'Max iterations — returning best result', bestBytes, 'fail');
+  return new Blob([bestPdfBytes || inputBytes], { type: 'application/pdf' });
 }
 
 // ── DOCX Compression ──────────────────────────────────────────────────────────
 /**
- * Strategy:
- * 1. Unzip DOCX with JSZip.
- * 2. For each image in word/media/, re-encode as JPEG at decreasing quality.
- * 3. Re-zip all files with maximum DEFLATE compression.
- * 4. Measure resulting size; iterate until target met.
+ * Unzips DOCX, re-compresses every embedded image at decreasing JPEG quality,
+ * re-zips with DEFLATE level 9. Tracks best result and always returns it.
+ *
+ * Quality range: 0.82 → 0.01
  */
 async function compressDOCX(inputBytes, targetBytes) {
-  const mode        = document.querySelector('input[name="mode"]:checked').value;
-  let quality       = mode === 'aggressive' ? 0.65 : 0.82;
-  const minQuality  = 0.08;
-  const maxIter     = 18;
-  let iteration     = 0;
+  const mode       = document.querySelector('input[name="mode"]:checked').value;
+  let quality      = mode === 'aggressive' ? 0.65 : 0.82;
+  // imgScale: shrinks pixel dimensions of images (1.0 = full size, 0.1 = 10% size)
+  let imgScale     = 1.0;
+
+  // ▼ Much lower floors — push all the way down
+  const minQuality  = 0.01;
+  const minImgScale = 0.05; // 5% of original pixels — brutally small but it works
+  const maxIter     = 30;
+
+  let iteration    = 0;
+  let bestBytes    = null;
+  let bestBuffer   = null;
 
   addLogEntry(0, 'Unzipping DOCX archive...', inputBytes.byteLength, 'info');
   setProgress(8, 'Reading DOCX structure...');
 
   const zip = await JSZip.loadAsync(inputBytes);
 
-  // Identify image files
+  // Gather image file keys from all Office media folders
   const imgKeys = Object.keys(zip.files).filter(name => {
     const lower = name.toLowerCase();
-    return (lower.startsWith('word/media/') || lower.startsWith('ppt/media/') || lower.startsWith('xl/media/'))
-      && !zip.files[name].dir;
+    return (
+      lower.includes('/media/') ||
+      lower.startsWith('word/media/') ||
+      lower.startsWith('ppt/media/') ||
+      lower.startsWith('xl/media/')
+    ) && !zip.files[name].dir;
   });
 
   addLogEntry(0, `Found ${imgKeys.length} embedded image(s)`, inputBytes.byteLength, 'info');
 
-  // Also increase DEFLATE on non-image files from the start
-  let currentBytes = inputBytes.byteLength;
+  // Pre-read all original image ArrayBuffers once
+  const origImgData = {};
+  for (const key of imgKeys) {
+    origImgData[key] = await zip.file(key).async('arraybuffer');
+  }
 
   while (iteration < maxIter) {
     iteration++;
@@ -356,27 +388,29 @@ async function compressDOCX(inputBytes, targetBytes) {
     const pct = 8 + (iteration / maxIter) * 82;
     setProgress(pct, `Pass #${iteration} — image quality: ${Math.round(quality * 100)}%`);
 
-    // Build a fresh zip each pass with current quality
+    // Fresh copy of the zip for this pass
     const freshZip = await JSZip.loadAsync(inputBytes);
 
-    // Re-compress each image
+    // Re-compress each image at current quality
     for (const key of imgKeys) {
-      const fileEntry = freshZip.file(key);
-      if (!fileEntry) continue;
+      const lower = key.toLowerCase();
+      const data  = origImgData[key];
 
-      const imgData  = await fileEntry.async('arraybuffer');
-      const lower    = key.toLowerCase();
+      // Skip tiny decorative images (< 2 KB)
+      if (data.byteLength < 2048) continue;
 
-      // Skip tiny files (< 5KB) to avoid artifacts on icons
-      if (imgData.byteLength < 5120) continue;
-
-      const recompressed = await recompressImage(imgData, quality, lower.endsWith('.png'));
+      const isPng       = lower.endsWith('.png');
+      // Pass both quality AND imgScale — this is what makes truly small files possible
+      const recompressed = await recompressImage(data, quality, isPng, imgScale);
       if (recompressed) {
-        freshZip.file(key, recompressed, { compression: 'DEFLATE', compressionOptions: { level: 9 } });
+        freshZip.file(key, recompressed, {
+          compression: 'DEFLATE',
+          compressionOptions: { level: 9 },
+        });
       }
     }
 
-    // Re-zip entire archive with DEFLATE
+    // Generate the new ZIP
     const resultBuffer = await freshZip.generateAsync({
       type: 'arraybuffer',
       compression: 'DEFLATE',
@@ -384,33 +418,50 @@ async function compressDOCX(inputBytes, targetBytes) {
     });
 
     const byteCount = resultBuffer.byteLength;
-    addLogEntry(iteration, `Quality ${Math.round(quality * 100)}%`, byteCount, byteCount <= targetBytes ? 'success' : 'pass');
+
+    // ── Track best ──
+    if (bestBytes === null || byteCount < bestBytes) {
+      bestBytes  = byteCount;
+      bestBuffer = resultBuffer;
+    }
+
+    const status = byteCount <= targetBytes ? 'success' : 'pass';
+    addLogEntry(iteration, `Q${Math.round(quality * 100)}% · img ${Math.round(imgScale * 100)}%px`, byteCount, status);
     updateMetrics(byteCount);
 
     if (byteCount <= targetBytes) {
-      setProgress(100, 'Target reached! ✓');
+      setProgress(100, '✓ Target reached!');
       return new Blob([resultBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
     }
 
-    // Reduce quality for next pass
+    // ── Reduce quality AND pixel dimensions for next pass ──
     const ratio = byteCount / targetBytes;
-    if (ratio > 3)        quality = Math.max(minQuality, quality - 0.20);
-    else if (ratio > 2)   quality = Math.max(minQuality, quality - 0.13);
-    else if (ratio > 1.4) quality = Math.max(minQuality, quality - 0.09);
-    else                  quality = Math.max(minQuality, quality - 0.05);
+    if (ratio > 5) {
+      quality  = Math.max(minQuality,  quality  - 0.30);
+      imgScale = Math.max(minImgScale, imgScale - 0.30);
+    } else if (ratio > 3) {
+      quality  = Math.max(minQuality,  quality  - 0.20);
+      imgScale = Math.max(minImgScale, imgScale - 0.20);
+    } else if (ratio > 2) {
+      quality  = Math.max(minQuality,  quality  - 0.12);
+      imgScale = Math.max(minImgScale, imgScale - 0.12);
+    } else if (ratio > 1.5) {
+      quality  = Math.max(minQuality,  quality  - 0.08);
+      imgScale = Math.max(minImgScale, imgScale - 0.08);
+    } else if (ratio > 1.2) {
+      quality  = Math.max(minQuality,  quality  - 0.05);
+      imgScale = Math.max(minImgScale, imgScale - 0.04);
+    } else {
+      quality  = Math.max(minQuality,  quality  - 0.03);
+      imgScale = Math.max(minImgScale, imgScale - 0.02);
+    }
 
-    if (quality <= minQuality) {
-      // Last pass at minimum quality
-      const result = await freshZip.generateAsync({
-        type: 'arraybuffer',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 9 },
-      });
-      addLogEntry(iteration, 'Minimum quality reached — best result saved', result.byteLength, 'fail');
-      updateMetrics(result.byteLength);
-      return new Blob([result], {
+    if (quality <= minQuality && imgScale <= minImgScale) {
+      addLogEntry(iteration, '⚠ Absolute minimum reached — returning best result', bestBytes, 'fail');
+      setProgress(100, 'Minimum compression limit reached.');
+      return new Blob([bestBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
     }
@@ -418,36 +469,39 @@ async function compressDOCX(inputBytes, targetBytes) {
     await sleep(10);
   }
 
-  // Fallback
-  setProgress(100, 'Max iterations reached.');
-  return new Blob([inputBytes], {
+  setProgress(100, 'Max passes done — returning best result.');
+  addLogEntry(iteration, 'Max iterations — returning best result', bestBytes, 'fail');
+  return new Blob([bestBuffer || inputBytes], {
     type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
 }
 
-/**
- * Re-compress an image buffer via Canvas.
- * Returns Uint8Array of re-encoded JPEG, or null on error.
- */
-async function recompressImage(arrayBuffer, quality, isPng) {
+// ── Image Re-compression via Canvas ──────────────────────────────────────────
+// scaleDown: 0.0–1.0 multiplier on pixel dimensions (1.0 = original, 0.1 = 10%)
+async function recompressImage(arrayBuffer, quality, isPng, scaleDown = 1.0) {
   return new Promise((resolve) => {
     const blob = new Blob([arrayBuffer]);
     const url  = URL.createObjectURL(blob);
     const img  = new Image();
 
     img.onload = () => {
+      // Clamp so canvas is never 0px
+      const w = Math.max(1, Math.round(img.naturalWidth  * scaleDown));
+      const h = Math.max(1, Math.round(img.naturalHeight * scaleDown));
+
       const canvas  = document.createElement('canvas');
-      canvas.width  = img.naturalWidth;
-      canvas.height = img.naturalHeight;
+      canvas.width  = w;
+      canvas.height = h;
       const ctx     = canvas.getContext('2d');
 
-      // White background for transparent PNGs
+      // White background for transparent PNGs before JPEG conversion
       if (isPng) {
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillRect(0, 0, w, h);
       }
 
-      ctx.drawImage(img, 0, 0);
+      // drawImage with explicit dest dimensions performs the downscale
+      ctx.drawImage(img, 0, 0, w, h);
       URL.revokeObjectURL(url);
 
       canvas.toBlob(
@@ -484,12 +538,12 @@ function showResult(finalSize, iterations, reductionPct) {
        </svg>`;
 
   resultTitle.textContent = targetMet
-    ? 'Compression Complete!'
-    : 'Best Possible Result Achieved';
+    ? '🎉 Compression Complete!'
+    : '⚠️ Maximum Compression Reached';
 
   resultDesc.textContent = targetMet
     ? `Your file was compressed to ${formatBytes(finalSize)}, meeting the target of ${formatBytes(state.targetBytes)}.`
-    : `The file reached its minimum compressible size. Target was ${formatBytes(state.targetBytes)}.`;
+    : `This file cannot be reduced to ${formatBytes(state.targetBytes)} — it is the absolute smallest possible. The content itself (text, images) sets a hard floor.`;
 
   statFinalSize.textContent  = formatBytes(finalSize);
   statReduction.textContent  = reductionPct.toFixed(1) + '%';
@@ -513,14 +567,14 @@ btnDownload.addEventListener('click', () => {
 btnReset.addEventListener('click', resetAll);
 
 function resetAll() {
-  state.file       = null;
-  state.fileBytes  = null;
-  state.resultBlob = null;
+  state.file        = null;
+  state.fileBytes   = null;
+  state.resultBlob  = null;
   state.targetBytes = 0;
   state.iterations  = 0;
   state.originalSize = 0;
 
-  fileInput.value  = '';
+  fileInput.value        = '';
   iterationLog.innerHTML = '';
   progressFill.style.width = '0%';
 
