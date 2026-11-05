@@ -7,7 +7,7 @@
   <meta name="description" content="BintangPrasetyo95's Shrinker: compress PDF, DOCX, PPTX, Video, and Image files to any target size you want. Iterative smart compression until your file hits the threshold." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2.2" />
   <link rel="icon" href="icon.svg">
 </head>
 <body>
@@ -334,11 +334,68 @@
 
 </div>
 
+<!-- PPTX Companion PDF & Video Chooser Modal -->
+<div id="pptxModal" class="modal-overlay hidden">
+  <div class="modal-card glass">
+    <div class="modal-header">
+      <div class="modal-icon">
+        <span style="font-size: 24px;">📊</span>
+      </div>
+      <div>
+        <h3 class="modal-title">PPTX Deep Flattening Engine</h3>
+        <p class="modal-subtitle">Replace components & animations with crisp PDF screenshots while keeping videos playable.</p>
+      </div>
+    </div>
+
+    <!-- Step 1: Companion PDF -->
+    <div class="modal-section">
+      <div class="section-label">
+        <span class="step-badge">1</span>
+        <span>Companion PDF (<span id="pptxDetectedSlides">0</span> slides detected)</span>
+      </div>
+      <p class="section-desc">Export your presentation to PDF in PowerPoint (same slide order), then drop it here to generate pixel-perfect slide screenshots.</p>
+      
+      <div id="pptxPdfDropzone" class="modal-dropzone" tabindex="0">
+        <div class="modal-dropzone-content">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:24px;height:24px;color:var(--accent);">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="12" y1="18" x2="12" y2="12"/>
+            <line x1="9" y1="15" x2="15" y2="15"/>
+          </svg>
+          <span id="pptxPdfDropLabel">Drop companion PDF here or click to browse</span>
+          <input type="file" id="pptxPdfInput" accept=".pdf" hidden />
+        </div>
+      </div>
+      <div id="pptxPdfStatus" class="modal-status-badge pending">Awaiting companion PDF...</div>
+    </div>
+
+    <!-- Step 2: Video Selection -->
+    <div class="modal-section" id="pptxVideoSection">
+      <div class="section-label">
+        <span class="step-badge">2</span>
+        <span>Embedded Videos (<span id="pptxVideoCount">0</span> detected)</span>
+      </div>
+      <p class="section-desc">Choose how each video is handled. Selected videos stay playable; non-video slides are turned into screenshots.</p>
+      <div id="pptxVideoList" class="video-cards-list">
+        <!-- Injected dynamically -->
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btnCancelPptxModal" class="btn-secondary">Cancel</button>
+      <button id="btnProceedPptxModal" class="btn-compress" disabled>
+        Proceed to Compression
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Libraries -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=2.2"></script>
 
 </body>
 </html>

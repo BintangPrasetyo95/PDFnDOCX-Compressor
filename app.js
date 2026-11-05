@@ -20,6 +20,9 @@ const state = {
   targetBytes: 0,
   iterations: 0,
   originalSize: 0,
+  pptxContext: null,
+  companionPdfDoc: null,
+  pptxVideoPrefs: {},
 };
 
 // ── DOM References ────────────────────────────────────────────────────────────
@@ -31,6 +34,19 @@ const fileTypeLabel   = document.getElementById('fileTypeLabel');
 const fileName        = document.getElementById('fileName');
 const fileSizeOrig    = document.getElementById('fileSizeOrig');
 const btnRemove       = document.getElementById('btnRemove');
+
+// PPTX Modal Elements
+const pptxModal           = document.getElementById('pptxModal');
+const pptxDetectedSlides  = document.getElementById('pptxDetectedSlides');
+const pptxPdfDropzone     = document.getElementById('pptxPdfDropzone');
+const pptxPdfInput        = document.getElementById('pptxPdfInput');
+const pptxPdfDropLabel    = document.getElementById('pptxPdfDropLabel');
+const pptxPdfStatus       = document.getElementById('pptxPdfStatus');
+const pptxVideoSection    = document.getElementById('pptxVideoSection');
+const pptxVideoCount      = document.getElementById('pptxVideoCount');
+const pptxVideoList       = document.getElementById('pptxVideoList');
+const btnCancelPptxModal  = document.getElementById('btnCancelPptxModal');
+const btnProceedPptxModal = document.getElementById('btnProceedPptxModal');
 
 const settingsPanel   = document.getElementById('settingsPanel');
 const targetSizeInput = document.getElementById('targetSize');
@@ -146,6 +162,12 @@ function handleFile(file) {
   state.file = file;
   state.originalSize = file.size;
 
+  // PPTX requires the deep-flattening companion PDF & video chooser workflow
+  if (ext === 'pptx') {
+    setupPPTXCompanionFlow(file);
+    return;
+  }
+
   fileName.textContent    = file.name;
   fileSizeOrig.textContent = formatBytes(file.size);
 
@@ -157,10 +179,6 @@ function handleFile(file) {
     fileTypeLabel.textContent    = 'DOCX';
     fileIconWrap.style.background = 'linear-gradient(135deg, #2563eb, #06b6d4)';
     fileIconWrap.className = 'file-icon-wrap docx';
-  } else if (ext === 'pptx') {
-    fileTypeLabel.textContent    = 'PPTX';
-    fileIconWrap.style.background = 'linear-gradient(135deg, #ea580c, #f97316)';
-    fileIconWrap.className = 'file-icon-wrap pptx';
   } else if (videoExts.includes(ext)) {
     fileTypeLabel.textContent    = ext.toUpperCase();
     fileIconWrap.style.background = 'linear-gradient(135deg, #7c3aed, #a855f7)';
@@ -198,6 +216,249 @@ function handleFile(file) {
   targetSizeInput.disabled = isNormal;
   targetUnitSel.disabled = isNormal;
 }
+
+// ── PPTX Companion PDF & Video Chooser Setup ──────────────────────────────────
+async function setupPPTXCompanionFlow(file) {
+  try {
+    dropzone.classList.add('hidden');
+    document.getElementById('supportedFormats').classList.add('hidden');
+
+    const arrayBuffer = await file.arrayBuffer();
+    state.fileBytes = new Uint8Array(arrayBuffer);
+    const zip = await JSZip.loadAsync(state.fileBytes);
+
+    const presRelsXml = await zip.file('ppt/_rels/presentation.xml.rels')?.async('text');
+    const presXml = await zip.file('ppt/presentation.xml')?.async('text');
+
+    // Slide dimensions
+    let cx = '12192000';
+    let cy = '6858000';
+    if (presXml) {
+      const cxMatch = presXml.match(/<p:sldSz[^>]*cx="(\d+)"/i);
+      const cyMatch = presXml.match(/<p:sldSz[^>]*cy="(\d+)"/i);
+      if (cxMatch) cx = cxMatch[1];
+      if (cyMatch) cy = cyMatch[1];
+    }
+
+    // Ordered slides detection
+    const rIdToTarget = {};
+    if (presRelsXml) {
+      const relRegex = /<Relationship[^>]*Id="([^"]+)"[^>]*Type="[^"]*\/slide"[^>]*Target="([^"]+)"/gi;
+      let m;
+      while ((m = relRegex.exec(presRelsXml)) !== null) {
+        let target = m[2].replace(/^\/?ppt\//, '');
+        if (!target.startsWith('slides/')) target = 'slides/' + target;
+        rIdToTarget[m[1]] = 'ppt/' + target;
+      }
+    }
+
+    let orderedSlides = [];
+    if (presXml) {
+      const sldIdRegex = /<p:sldId[^>]*r:id="([^"]+)"/gi;
+      let m;
+      while ((m = sldIdRegex.exec(presXml)) !== null) {
+        const path = rIdToTarget[m[1]];
+        if (path && zip.file(path)) orderedSlides.push(path);
+      }
+    }
+    if (orderedSlides.length === 0) {
+      orderedSlides = Object.keys(zip.files)
+        .filter(n => /^ppt\/slides\/slide\d+\.xml$/i.test(n))
+        .sort((a,b) => parseInt(a.match(/slide(\d+)\.xml/i)[1]) - parseInt(b.match(/slide(\d+)\.xml/i)[1]));
+    }
+
+    if (orderedSlides.length === 0) {
+      alert('Could not find any slides in this PPTX presentation.');
+      resetAll();
+      return;
+    }
+
+    // Detect videos on each slide
+    const slideVideos = [];
+    for (let i = 0; i < orderedSlides.length; i++) {
+      const slidePath = orderedSlides[i];
+      const slideNum = i + 1;
+      const relsPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+      const relsFile = zip.file(relsPath);
+      if (relsFile) {
+        const relsText = await relsFile.async('text');
+        const videoRegex = /<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+\.(mp4|mov|wmv|avi|m4v|webm|mkv|flv))"/gi;
+        let vm;
+        while ((vm = videoRegex.exec(relsText)) !== null) {
+          const relId = vm[1];
+          const rawTarget = vm[2];
+          const cleanTarget = rawTarget.replace(/^\.\.\//, 'ppt/');
+          const vFile = zip.file(cleanTarget);
+          const size = vFile ? (await vFile.async('uint8array')).byteLength : 0;
+          slideVideos.push({
+            slideIndex: i,
+            slideNum,
+            slidePath,
+            relsPath,
+            relId,
+            target: cleanTarget,
+            fileName: cleanTarget.split('/').pop(),
+            size
+          });
+        }
+      }
+    }
+
+    state.pptxContext = {
+      zip,
+      orderedSlides,
+      slideVideos,
+      cx,
+      cy,
+      originalFile: file
+    };
+
+    state.companionPdfDoc = null;
+    state.pptxVideoPrefs = {};
+
+    pptxDetectedSlides.textContent = orderedSlides.length;
+    pptxPdfStatus.className = 'modal-status-badge pending';
+    pptxPdfStatus.textContent = `Awaiting companion PDF (${orderedSlides.length} pages)...`;
+    pptxPdfDropLabel.textContent = 'Drop companion PDF here or click to browse';
+    pptxPdfInput.value = '';
+    btnProceedPptxModal.disabled = true;
+
+    pptxVideoCount.textContent = slideVideos.length;
+    pptxVideoList.innerHTML = '';
+    if (slideVideos.length > 0) {
+      slideVideos.forEach((v) => {
+        const item = document.createElement('div');
+        item.className = 'video-card-item';
+        item.innerHTML = `
+          <div class="video-card-info">
+            <span class="video-card-title">Slide ${v.slideNum}: ${v.fileName}</span>
+            <span class="video-card-meta">Original Size: ${formatBytes(v.size)}</span>
+          </div>
+          <div class="video-card-actions">
+            <select class="video-action-select" data-target="${v.target}">
+              <option value="compress" selected>Playable &amp; Compress</option>
+              <option value="keep">Playable Original</option>
+              <option value="flatten">Flatten (Remove Video)</option>
+            </select>
+          </div>
+        `;
+        pptxVideoList.appendChild(item);
+      });
+    } else {
+      pptxVideoList.innerHTML = `
+        <div style="font-size:0.8rem; color: var(--text-secondary); padding: 8px 0;">
+          No embedded videos detected in this presentation. All ${orderedSlides.length} slides will be flattened into screenshots.
+        </div>
+      `;
+    }
+
+    pptxModal.classList.remove('hidden');
+
+  } catch (err) {
+    console.error('Error analyzing PPTX:', err);
+    alert('Error reading PPTX file: ' + err.message);
+    resetAll();
+  }
+}
+
+// PPTX Companion PDF Dropzone Listeners
+pptxPdfDropzone.addEventListener('dragover', (e) => { e.preventDefault(); pptxPdfDropzone.classList.add('drag-over'); });
+pptxPdfDropzone.addEventListener('dragleave', () => pptxPdfDropzone.classList.remove('drag-over'));
+pptxPdfDropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  pptxPdfDropzone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) handleCompanionPdf(file);
+});
+pptxPdfDropzone.addEventListener('click', () => pptxPdfInput.click());
+pptxPdfInput.addEventListener('change', (e) => {
+  if (e.target.files[0]) handleCompanionPdf(e.target.files[0]);
+});
+
+async function handleCompanionPdf(file) {
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    pptxPdfStatus.className = 'modal-status-badge error';
+    pptxPdfStatus.textContent = '❌ Please select a valid PDF file.';
+    btnProceedPptxModal.disabled = true;
+    return;
+  }
+
+  pptxPdfStatus.className = 'modal-status-badge pending';
+  pptxPdfStatus.textContent = 'Reading and verifying PDF pages...';
+
+  try {
+    const bytes = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(bytes) });
+    const pdfDoc = await loadingTask.promise;
+    const expectedPages = state.pptxContext.orderedSlides.length;
+
+    if (pdfDoc.numPages === expectedPages) {
+      state.companionPdfDoc = pdfDoc;
+      pptxPdfStatus.className = 'modal-status-badge success';
+      pptxPdfStatus.textContent = `✓ Perfect match! ${pdfDoc.numPages} PDF pages match ${expectedPages} slides.`;
+      pptxPdfDropLabel.textContent = `Selected: ${file.name} (${pdfDoc.numPages} pages)`;
+      btnProceedPptxModal.disabled = false;
+    } else {
+      state.companionPdfDoc = null;
+      pptxPdfStatus.className = 'modal-status-badge error';
+      pptxPdfStatus.textContent = `❌ Page mismatch: PDF has ${pdfDoc.numPages} page(s), but PPTX has ${expectedPages} slides.`;
+      btnProceedPptxModal.disabled = true;
+    }
+  } catch (err) {
+    console.error(err);
+    pptxPdfStatus.className = 'modal-status-badge error';
+    pptxPdfStatus.textContent = '❌ Error loading PDF: ' + err.message;
+    btnProceedPptxModal.disabled = true;
+  }
+}
+
+btnCancelPptxModal.addEventListener('click', () => {
+  pptxModal.classList.add('hidden');
+  resetAll();
+});
+
+btnProceedPptxModal.addEventListener('click', () => {
+  if (!state.companionPdfDoc) return;
+
+  // Collect video preferences
+  state.pptxVideoPrefs = {};
+  document.querySelectorAll('.video-action-select').forEach(sel => {
+    state.pptxVideoPrefs[sel.dataset.target] = sel.value;
+  });
+
+  pptxModal.classList.add('hidden');
+
+  // Proceed to compression settings view
+  fileTypeLabel.textContent = 'PPTX';
+  fileIconWrap.style.background = 'linear-gradient(135deg, #ea580c, #f97316)';
+  fileIconWrap.className = 'file-icon-wrap pptx';
+  fileName.textContent = `${state.file.name} (+ Companion PDF)`;
+  fileSizeOrig.textContent = formatBytes(state.originalSize);
+
+  document.getElementById('supportedFormats').classList.add('hidden');
+  fileInfoBar.classList.remove('hidden');
+  settingsPanel.classList.remove('hidden');
+  progressPanel.classList.add('hidden');
+  resultPanel.classList.add('hidden');
+
+  document.getElementById('visualOrigSize').textContent = formatBytes(state.originalSize);
+  updateVisualTarget();
+
+  const targetSizeGroup = document.getElementById('targetSizeGroup');
+  const visualFlow = document.querySelector('.target-visual-flow');
+  const activeMode = document.querySelector('input[name="mode"]:checked').value;
+  const isNormal = activeMode === 'normal';
+
+  if (isNormal) {
+    targetSizeGroup.classList.add('locked');
+    visualFlow.classList.add('locked');
+  } else {
+    targetSizeGroup.classList.remove('locked');
+    visualFlow.classList.remove('locked');
+  }
+  targetSizeInput.disabled = isNormal;
+  targetUnitSel.disabled = isNormal;
+});
 
 // Mode radio buttons visibility toggler
 document.querySelectorAll('input[name="mode"]').forEach(radio => {
@@ -302,7 +563,13 @@ async function startCompression() {
       } else if (ext === 'docx') {
         resultBlob = await compressDOCX(state.fileBytes, state.targetBytes);
       } else if (ext === 'pptx') {
-        resultBlob = await compressPPTX(state.fileBytes, state.targetBytes);
+        resultBlob = await compressPPTXDeepFlatten(
+          state.fileBytes,
+          state.companionPdfDoc,
+          state.pptxVideoPrefs,
+          state.targetBytes,
+          state.pptxContext
+        );
       } else if (imageExts.includes(ext)) {
         resultBlob = await compressImageFile(state.fileBytes, state.targetBytes);
       } else {
@@ -633,81 +900,81 @@ async function compressDOCX(inputBytes, targetBytes) {
   });
 }
 
-// ── PPTX Compression ──────────────────────────────────────────────────────────
+// ── PPTX Deep-Flattening Engine ───────────────────────────────────────────────
 /**
- * Unzips PPTX archive via JSZip.
- * Scans ppt/media/ for images and videos.
- * CRUCIAL: Leaves all embedded videos and audio completely untouched and intact!
- * Iteratively compresses embedded images using canvas downscaling + JPEG quality ladders.
- * Re-packs the archive using maximum DEFLATE compression.
+ * Transforms PPTX:
+ * 1. Non-video slides (and flattened video slides) have all XML shapes and animations removed,
+ *    replaced by a full-bleed crisp screenshot rendered from companion PDF.
+ * 2. Video slides chosen to stay playable remain intact with their video containers.
+ * 3. Videos marked for compression are compressed via MediaRecorder.
+ * 4. All unreferenced legacy slide media is purged from the ZIP.
+ * 5. Iterates quality & scale ladders to achieve the desired target size.
  */
-async function compressPPTX(inputBytes, targetBytes) {
+async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetBytes, pptxContext) {
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  let qualityLadder = [95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 8, 6, 4, 2, 1];
-  let scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01];
+  let qualityLadder = [90, 80, 70, 60, 50, 40, 30, 20, 15, 10, 5, 2, 1];
+  let scaleLadder = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05];
 
   if (mode === 'normal') {
-    qualityLadder = qualityLadder.filter(q => q >= 50);
-    scaleLadder = scaleLadder.filter(s => s >= 0.70);
+    qualityLadder = [85];
+    scaleLadder = [1.0];
   } else if (mode === 'balanced') {
-    qualityLadder = qualityLadder.filter(q => q >= 20);
-    scaleLadder = scaleLadder.filter(s => s >= 0.30);
+    qualityLadder = qualityLadder.filter(q => q >= 25);
+    scaleLadder = scaleLadder.filter(s => s >= 0.35);
   }
 
-  let qualityIdx = 0;
-  let scaleIdx = 0;
+  const { orderedSlides, slideVideos, cx, cy } = pptxContext;
+  const totalSlides = orderedSlides.length;
 
-  addLogEntry(0, 'Unzipping PPTX archive...', inputBytes.byteLength, 'info');
-  setProgress(5, 'Reading PPTX presentation structure...');
+  addLogEntry(0, `Initializing Deep-Flattening for ${totalSlides} slides...`, inputBytes.byteLength, 'info');
+  setProgress(5, 'Analyzing slide relationships & videos...');
 
-  const zip = await JSZip.loadAsync(inputBytes);
-
-  // In PPTX, all media files are stored under ppt/media/
-  const allMediaKeys = Object.keys(zip.files).filter(name => {
-    const lower = name.toLowerCase();
-    return lower.startsWith('ppt/media/') && !zip.files[name].dir;
+  // Identify which slides are Video Exceptions (kept playable)
+  // Maps slideIndex -> { target, action, fileName }
+  const videoExceptionSlides = new Map();
+  slideVideos.forEach(v => {
+    const action = (videoPrefs && videoPrefs[v.target]) || 'compress';
+    if (action !== 'flatten') {
+      videoExceptionSlides.set(v.slideIndex, { target: v.target, action, fileName: v.fileName });
+    }
   });
 
-  // Filter raster images suitable for canvas recompression
-  const imgKeys = allMediaKeys.filter(name => {
-    return /\.(jpg|jpeg|png|webp|bmp|tif|tiff)$/i.test(name);
-  });
+  const flattenedCount = totalSlides - videoExceptionSlides.size;
+  addLogEntry(0, `Flattening ${flattenedCount} slide(s) to screenshots; ${videoExceptionSlides.size} video slide(s) preserved`, inputBytes.byteLength, 'info');
+  document.getElementById('progressImagesCount').textContent = `${flattenedCount} screenshots`;
 
-  // Detect embedded videos & audios to guarantee they are preserved intact
-  const videoKeys = allMediaKeys.filter(name => {
-    return /\.(mp4|mov|wmv|avi|m4v|webm|mkv|mpg|mpeg|flv|mp3|m4a|wav|wma)$/i.test(name);
-  });
+  // ── Step 1: Pre-compress eligible videos once and cache results ──
+  const compressedVideoCache = {};
+  const baseZip = await JSZip.loadAsync(inputBytes);
 
-  if (videoKeys.length > 0) {
-    addLogEntry(0, `Found ${videoKeys.length} embedded video/media file(s) — safely preserved intact`, inputBytes.byteLength, 'success');
+  for (const [sIdx, vInfo] of videoExceptionSlides.entries()) {
+    if (vInfo.action === 'compress' && !compressedVideoCache[vInfo.target]) {
+      const vFile = baseZip.file(vInfo.target);
+      if (vFile) {
+        setProgress(10, `Compressing video: ${vInfo.fileName}...`);
+        addLogEntry(0, `Compressing embedded video: ${vInfo.fileName}...`, inputBytes.byteLength, 'info');
+        try {
+          const rawVidBytes = await vFile.async('uint8array');
+          const vidBlob = new Blob([rawVidBytes], { type: 'video/mp4' });
+          const vidTarget = targetBytes > 0 ? Math.round(targetBytes * 0.6) : 0;
+          const compressedBlob = await compressVideoFile(vidBlob, vidTarget);
+          const compressedBuffer = await compressedBlob.arrayBuffer();
+          compressedVideoCache[vInfo.target] = new Uint8Array(compressedBuffer);
+          addLogEntry(0, `Compressed ${vInfo.fileName}: ${formatBytes(rawVidBytes.byteLength)} → ${formatBytes(compressedBuffer.byteLength)}`, compressedBuffer.byteLength, 'success');
+        } catch (vidErr) {
+          console.warn('Video compression fallback (keeping original):', vidErr);
+          addLogEntry(0, `Video compression skipped for ${vInfo.fileName} (kept original)`, inputBytes.byteLength, 'pass');
+        }
+      }
+    }
   }
 
-  addLogEntry(0, `Found ${imgKeys.length} embedded image(s)`, inputBytes.byteLength, 'info');
-  document.getElementById('progressImagesCount').textContent = `${imgKeys.length} img${videoKeys.length > 0 ? ` + ${videoKeys.length} vid` : ''}`;
-
-  // If there are no images, re-pack with maximum DEFLATE level 9 to reduce container overhead
-  if (imgKeys.length === 0) {
-    setProgress(50, 'Repacking PPTX with maximum DEFLATE...');
-    const resultBuffer = await zip.generateAsync({
-      type: 'arraybuffer',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 9 },
-    });
-    setProgress(100, '✓ Compression complete!');
-    return new Blob([resultBuffer], {
-      type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    });
-  }
-
-  // Pre-read original image buffers once to prevent degradation across iterations
-  const origImgData = {};
-  for (const key of imgKeys) {
-    origImgData[key] = await zip.file(key).async('arraybuffer');
-  }
-
+  // ── Step 2: Flattening & Multi-pass Image Optimization ──
   let bestBytes = null;
   let bestBuffer = null;
   let iteration = 0;
+  let qualityIdx = 0;
+  let scaleIdx = 0;
 
   const totalSteps = qualityLadder.length + scaleLadder.length - 1;
   const startTime = Date.now();
@@ -723,25 +990,131 @@ async function compressPPTX(inputBytes, targetBytes) {
     document.getElementById('progressQuality').textContent = currentQuality;
     document.getElementById('progressScale').textContent = Math.round(currentScale * 100) + '%';
 
-    const progressPct = 5 + ((qualityIdx + scaleIdx) / totalSteps) * 90;
+    const progressPct = 15 + ((qualityIdx + scaleIdx) / totalSteps) * 80;
     setProgress(progressPct, `Pass #${iteration} — Quality: ${currentQuality}, Scale: ${Math.round(currentScale * 100)}%`);
 
-    // Fresh copy of zip for this pass (ensures all videos, audio, layouts, XML remain intact)
     const freshZip = await JSZip.loadAsync(inputBytes);
 
-    const recompressPromises = imgKeys.map(async (key) => {
-      const data = origImgData[key];
-      const recompressed = await recompressImage(data, currentQuality / 100, currentScale);
-      if (recompressed) {
-        freshZip.file(key, recompressed, {
-          compression: 'DEFLATE',
-          compressionOptions: { level: 9 },
-        });
+    // Apply pre-compressed videos
+    for (const [target, vBytes] of Object.entries(compressedVideoCache)) {
+      freshZip.file(target, vBytes, {
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 },
+      });
+    }
+
+    // List of active media to keep (prevents deleting active videos)
+    const activeMediaToKeep = new Set();
+    for (const [sIdx, vInfo] of videoExceptionSlides.entries()) {
+      activeMediaToKeep.add(vInfo.target.toLowerCase());
+    }
+
+    // Render each slide from PDF
+    for (let i = 1; i <= totalSlides; i++) {
+      const slideIndex = i - 1;
+      const slidePath = orderedSlides[slideIndex];
+      const relsPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+
+      // Check if this slide is a Video Exception (kept playable)
+      if (videoExceptionSlides.has(slideIndex)) {
+        continue;
       }
-    });
 
-    await Promise.all(recompressPromises);
+      // Render PDF page for this slide
+      const page = await pdfDoc.getPage(i);
+      const viewport = page.getViewport({ scale: currentScale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
 
+      const dataURL = canvas.toDataURL('image/jpeg', currentQuality / 100);
+      const b64 = dataURL.split(',')[1];
+      const jpgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+
+      const bgRelPath = `../media/slide_bg_${i}.jpg`;
+      const bgZipPath = `ppt/media/slide_bg_${i}.jpg`;
+      activeMediaToKeep.add(bgZipPath.toLowerCase());
+
+      freshZip.file(bgZipPath, jpgBytes, {
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 },
+      });
+
+      // Update slide rels
+      let layoutTarget = '../slideLayouts/slideLayout1.xml';
+      const origRelsFile = freshZip.file(relsPath);
+      if (origRelsFile) {
+        const origRelsText = await origRelsFile.async('text');
+        const layoutMatch = origRelsText.match(/<Relationship[^>]*Type="[^"]*\/slideLayout"[^>]*Target="([^"]+)"[^>]*\/?>/i);
+        if (layoutMatch) layoutTarget = layoutMatch[1];
+      }
+
+      const flatRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="${layoutTarget}"/>
+  <Relationship Id="rIdBg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${bgRelPath}"/>
+</Relationships>`;
+      freshZip.file(relsPath, flatRelsXml);
+
+      // Update slide XML (full-bleed picture, all animations removed)
+      const flatSlideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr>
+        <p:cNvPr id="1" name=""/>
+        <p:cNvGrpSpPr/>
+        <p:nvPr/>
+      </p:nvGrpSpPr>
+      <p:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="0" cy="0"/>
+          <a:chOff x="0" y="0"/>
+          <a:chExt cx="0" cy="0"/>
+        </a:xfrm>
+      </p:grpSpPr>
+      <p:pic>
+        <p:nvPicPr>
+          <p:cNvPr id="2" name="Slide Screenshot"/>
+          <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
+          <p:nvPr/>
+        </p:nvPicPr>
+        <p:blipFill>
+          <a:blip r:embed="rIdBg"/>
+          <a:stretch><a:fillRect/></a:stretch>
+        </p:blipFill>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="0" y="0"/>
+            <a:ext cx="${cx}" cy="${cy}"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        </p:spPr>
+      </p:pic>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr><a:masterClrMap/></p:clrMapOvr>
+</p:sld>`;
+      freshZip.file(slidePath, flatSlideXml);
+    }
+
+    // Clean up all unused legacy media files from flattened slides
+    const allZipFiles = Object.keys(freshZip.files);
+    for (const fName of allZipFiles) {
+      const lower = fName.toLowerCase();
+      if (lower.startsWith('ppt/media/') && !freshZip.files[fName].dir) {
+        if (!activeMediaToKeep.has(lower)) {
+          freshZip.remove(fName);
+        }
+      }
+    }
+
+    // Generate compressed PPTX archive
     const resultBuffer = await freshZip.generateAsync({
       type: 'arraybuffer',
       compression: 'DEFLATE',
@@ -751,11 +1124,11 @@ async function compressPPTX(inputBytes, targetBytes) {
     const byteCount = resultBuffer.byteLength;
 
     if (bestBytes === null || byteCount < bestBytes) {
-      bestBytes  = byteCount;
+      bestBytes = byteCount;
       bestBuffer = resultBuffer;
     }
 
-    const isSuccess = byteCount <= targetBytes;
+    const isSuccess = targetBytes > 0 ? byteCount <= targetBytes : true;
     const status = isSuccess ? 'success' : 'pass';
     addLogEntry(iteration, `Quality: ${currentQuality} · Scale: ${Math.round(currentScale * 100)}%`, byteCount, status);
     updateMetrics(byteCount);
@@ -768,25 +1141,21 @@ async function compressPPTX(inputBytes, targetBytes) {
     let timeStr = '0s';
     if (estTimeRemainingMs > 0) {
       const totalSec = Math.ceil(estTimeRemainingMs / 1000);
-      if (totalSec >= 60) {
-        timeStr = `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`;
-      } else {
-        timeStr = `${totalSec}s`;
-      }
+      timeStr = totalSec >= 60 ? `${Math.floor(totalSec / 60)}m ${totalSec % 60}s` : `${totalSec}s`;
     }
     document.getElementById('progressTimeRemaining').textContent = isSuccess ? 'Done' : timeStr;
 
-    if (mode === 'normal' || isSuccess) {
-      setProgress(100, '✓ Compression complete!');
+    if (mode === 'normal' || (targetBytes > 0 && isSuccess)) {
+      setProgress(100, '✓ Deep-flattening compression complete!');
       document.getElementById('progressTimeRemaining').textContent = 'Done';
       return new Blob([resultBuffer], {
         type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       });
     }
 
-    if (currentQuality > 1) {
+    if (currentQuality > 5) {
       qualityIdx++;
-    } else if (currentScale > 0.01) {
+    } else if (currentScale > 0.05) {
       scaleIdx++;
     } else {
       break;
@@ -795,8 +1164,8 @@ async function compressPPTX(inputBytes, targetBytes) {
     await sleep(20);
   }
 
-  setProgress(100, 'Minimum quality and scale reached.');
-  addLogEntry(iteration, '⚠ Absolute minimum reached — returning best result', bestBytes, 'fail');
+  setProgress(100, 'Minimum quality reached.');
+  addLogEntry(iteration, '⚠ Returning best compressed result', bestBytes, 'fail');
   document.getElementById('progressTimeRemaining').textContent = 'Finished';
   return new Blob([bestBuffer], {
     type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -1166,11 +1535,16 @@ function resetAll() {
   state.targetBytes = 0;
   state.iterations  = 0;
   state.originalSize = 0;
+  state.pptxContext = null;
+  state.companionPdfDoc = null;
+  state.pptxVideoPrefs = {};
 
   fileInput.value        = '';
+  pptxPdfInput.value     = '';
   iterationLog.innerHTML = '';
   progressFill.style.width = '0%';
 
+  pptxModal.classList.add('hidden');
   dropzone.classList.remove('hidden');
   document.getElementById('supportedFormats').classList.remove('hidden');
   fileInfoBar.classList.add('hidden');
