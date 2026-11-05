@@ -291,6 +291,12 @@ body {
 .file-icon-wrap.docx {
   background: linear-gradient(135deg, #e07c00, #f5a800);
 }
+.file-icon-wrap.pptx {
+  background: linear-gradient(135deg, #ea580c, #f97316);
+}
+.file-icon-wrap.video {
+  background: linear-gradient(135deg, #7c3aed, #a855f7);
+}
 
 .file-details {
   flex: 1;

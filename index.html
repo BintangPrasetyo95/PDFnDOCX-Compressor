@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BintangPrasetyo95's Shrinker - Smart PDF and DOCX Compressor</title>
-  <meta name="description" content="BintangPrasetyo95's Shrinker: compress PDF and DOCX files to any target size you want. Iterative smart compression until your file hits the threshold." />
+  <title>BintangPrasetyo95's Shrinker - Smart PDF, DOCX, PPTX & Video Compressor</title>
+  <meta name="description" content="BintangPrasetyo95's Shrinker: compress PDF, DOCX, PPTX, Video, and Image files to any target size you want. Iterative smart compression until your file hits the threshold." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
@@ -35,7 +35,7 @@
   <!-- Hero -->
   <section class="hero">
     <h1 class="hero-title">Compress Files to <span class="gradient-text">Any Size</span></h1>
-    <p class="hero-subtitle">Set a target file size and BintangPrasetyo95's Shrinker iteratively compresses your PDF or DOCX until it meets your threshold, automatically.</p>
+    <p class="hero-subtitle">Set a target file size and BintangPrasetyo95's Shrinker iteratively compresses your PDF, DOCX, PPTX, Video, or Image until it meets your threshold, automatically.</p>
   </section>
 
   <!-- Main Card -->
@@ -48,7 +48,7 @@
           <img src="icon.svg" alt="Upload Icon" style="width:100%;height:100%;object-fit:contain;position:relative;z-index:1;">
         </div>
         <p class="drop-title">Drop your file here</p>
-        <p class="drop-sub">PDF, DOCX, or Image · Up to 200 MB</p>
+        <p class="drop-sub">PDF, DOCX, PPTX, Video, or Image · Up to 500 MB</p>
         <span class="btn-upload" id="uploadLabel">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
@@ -57,7 +57,7 @@
           </svg>
           Browse File
         </span>
-        <input type="file" id="fileInput" accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff" hidden />
+        <input type="file" id="fileInput" accept=".pdf,.docx,.pptx,.mp4,.webm,.mov,.m4v,.mkv,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff" hidden />
       </div>
     </div>
 
@@ -67,11 +67,9 @@
       <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
         <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #ef4444;">PDF</span>
         <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(37, 99, 235, 0.1); border: 1px solid rgba(37, 99, 235, 0.2); color: #3b82f6;">DOCX</span>
-        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">JPG / JPEG</span>
-        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">PNG</span>
-        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">WEBP</span>
-        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">BMP</span>
-        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">TIFF / TIF</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(249, 115, 22, 0.1); border: 1px solid rgba(249, 115, 22, 0.2); color: #f97316;">PPTX</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.2); color: #a855f7;">VIDEO (MP4 / WEBM)</span>
+        <span style="padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.2); color: #10b981;">JPG / PNG / WEBP / BMP</span>
       </div>
     </div>
 
@@ -187,19 +185,19 @@
       <!-- Real-time Stats Grid -->
       <div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px;">
         <div class="stat-pill">
-          <span class="stat-label">Iteration</span>
+          <span class="stat-label">Iteration / Pass</span>
           <span class="stat-val" id="progressIteration">0</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-label">JPEG Quality</span>
+          <span class="stat-label">Quality / Bitrate</span>
           <span class="stat-val" id="progressQuality">95</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-label">Scale</span>
+          <span class="stat-label">Scale / Resolution</span>
           <span class="stat-val" id="progressScale">100%</span>
         </div>
         <div class="stat-pill">
-          <span class="stat-label">Images Count</span>
+          <span class="stat-label">Media Count</span>
           <span class="stat-val" id="progressImagesCount">0</span>
         </div>
         <div class="stat-pill" style="grid-column: span 2;">
@@ -290,7 +288,7 @@
           </svg>
         </div>
         <h3>Upload File</h3>
-        <p>Drop your PDF or DOCX file into the upload zone</p>
+        <p>Drop your PDF, DOCX, PPTX, Video, or Image into the upload zone</p>
       </div>
       <div class="step-card glass">
         <div class="step-num">02</div>
