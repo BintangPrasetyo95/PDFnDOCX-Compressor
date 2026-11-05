@@ -23,6 +23,7 @@ const state = {
   pptxContext: null,
   companionPdfDoc: null,
   pptxVideoPrefs: {},
+  previewVideoUrls: [],
 };
 
 // ── DOM References ────────────────────────────────────────────────────────────
@@ -45,6 +46,11 @@ const pptxPdfStatus       = document.getElementById('pptxPdfStatus');
 const pptxVideoSection    = document.getElementById('pptxVideoSection');
 const pptxVideoCount      = document.getElementById('pptxVideoCount');
 const pptxVideoList       = document.getElementById('pptxVideoList');
+const pptxQuickActions    = document.getElementById('pptxQuickActions');
+const btnQuickCompressAll = document.getElementById('btnQuickCompressAll');
+const btnQuickKeepAll     = document.getElementById('btnQuickKeepAll');
+const btnQuickFlattenAll  = document.getElementById('btnQuickFlattenAll');
+const pptxSummaryBanner   = document.getElementById('pptxSummaryBanner');
 const btnCancelPptxModal  = document.getElementById('btnCancelPptxModal');
 const btnProceedPptxModal = document.getElementById('btnProceedPptxModal');
 
@@ -217,11 +223,106 @@ function handleFile(file) {
   targetUnitSel.disabled = isNormal;
 }
 
-// ── PPTX Companion PDF & Video Chooser Setup ──────────────────────────────────
+// ── PPTX Companion PDF & Interactive Video Chooser Setup ───────────────────────
+function revokePreviewVideoUrls() {
+  if (state.previewVideoUrls && state.previewVideoUrls.length > 0) {
+    state.previewVideoUrls.forEach(url => {
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    });
+    state.previewVideoUrls = [];
+  }
+}
+
+function updatePPTXSummaryBanner() {
+  if (!state.pptxContext || !pptxSummaryBanner) return;
+  const totalSlides = state.pptxContext.orderedSlides.length;
+  const slideVideos = state.pptxContext.slideVideos;
+
+  if (!state.companionPdfDoc) {
+    pptxSummaryBanner.innerHTML = `Presentation contains <strong>${totalSlides}</strong> slide(s) and <strong>${slideVideos.length}</strong> embedded video(s). Please drop the companion PDF above to unlock compression.`;
+    return;
+  }
+
+  let compressCount = 0;
+  let keepCount = 0;
+  let flattenCount = 0;
+
+  slideVideos.forEach(v => {
+    const action = state.pptxVideoPrefs[v.target] || 'compress';
+    if (action === 'compress') compressCount++;
+    else if (action === 'keep') keepCount++;
+    else if (action === 'flatten') flattenCount++;
+  });
+
+  const playableSlideIndices = new Set();
+  slideVideos.forEach(v => {
+    const action = state.pptxVideoPrefs[v.target] || 'compress';
+    if (action !== 'flatten') {
+      playableSlideIndices.add(v.slideIndex);
+    }
+  });
+
+  const totalFlattenedSlides = totalSlides - playableSlideIndices.size;
+  const totalPlayableVideos = compressCount + keepCount;
+
+  pptxSummaryBanner.innerHTML = `
+    <strong>Ready:</strong> 
+    <strong>${totalFlattenedSlides}</strong> slide(s) flattened into screenshots • 
+    <strong>${playableSlideIndices.size}</strong> slide(s) kept playable with 
+    <strong>${totalPlayableVideos}</strong> active video(s) 
+    (${compressCount} compressed, ${keepCount} original untouched).
+  `;
+}
+
+function syncAllActionPills() {
+  document.querySelectorAll('.video-actions-segmented').forEach(group => {
+    const target = group.dataset.target;
+    const action = state.pptxVideoPrefs[target] || 'compress';
+    group.querySelectorAll('.action-pill').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.action === action);
+    });
+  });
+}
+
+if (btnQuickCompressAll) {
+  btnQuickCompressAll.addEventListener('click', () => {
+    if (!state.pptxContext) return;
+    state.pptxContext.slideVideos.forEach(v => {
+      state.pptxVideoPrefs[v.target] = 'compress';
+    });
+    syncAllActionPills();
+    updatePPTXSummaryBanner();
+  });
+}
+
+if (btnQuickKeepAll) {
+  btnQuickKeepAll.addEventListener('click', () => {
+    if (!state.pptxContext) return;
+    state.pptxContext.slideVideos.forEach(v => {
+      state.pptxVideoPrefs[v.target] = 'keep';
+    });
+    syncAllActionPills();
+    updatePPTXSummaryBanner();
+  });
+}
+
+if (btnQuickFlattenAll) {
+  btnQuickFlattenAll.addEventListener('click', () => {
+    if (!state.pptxContext) return;
+    state.pptxContext.slideVideos.forEach(v => {
+      state.pptxVideoPrefs[v.target] = 'flatten';
+    });
+    syncAllActionPills();
+    updatePPTXSummaryBanner();
+  });
+}
+
 async function setupPPTXCompanionFlow(file) {
   try {
     dropzone.classList.add('hidden');
     document.getElementById('supportedFormats').classList.add('hidden');
+
+    revokePreviewVideoUrls();
 
     const arrayBuffer = await file.arrayBuffer();
     state.fileBytes = new Uint8Array(arrayBuffer);
@@ -273,7 +374,7 @@ async function setupPPTXCompanionFlow(file) {
       return;
     }
 
-    // Detect videos on each slide
+    // Detect videos on each slide and create playable preview URLs
     const slideVideos = [];
     for (let i = 0; i < orderedSlides.length; i++) {
       const slidePath = orderedSlides[i];
@@ -289,7 +390,24 @@ async function setupPPTXCompanionFlow(file) {
           const rawTarget = vm[2];
           const cleanTarget = rawTarget.replace(/^\.\.\//, 'ppt/');
           const vFile = zip.file(cleanTarget);
-          const size = vFile ? (await vFile.async('uint8array')).byteLength : 0;
+          let size = 0;
+          let videoUrl = null;
+
+          if (vFile) {
+            const vBytes = await vFile.async('uint8array');
+            size = vBytes.byteLength;
+            const ext = cleanTarget.split('.').pop().toLowerCase();
+            let mime = 'video/mp4';
+            if (ext === 'webm') mime = 'video/webm';
+            else if (ext === 'mov') mime = 'video/quicktime';
+            else if (ext === 'm4v') mime = 'video/x-m4v';
+            else if (ext === 'ogg' || ext === 'ogv') mime = 'video/ogg';
+
+            const vBlob = new Blob([vBytes], { type: mime });
+            videoUrl = URL.createObjectURL(vBlob);
+            state.previewVideoUrls.push(videoUrl);
+          }
+
           slideVideos.push({
             slideIndex: i,
             slideNum,
@@ -298,7 +416,8 @@ async function setupPPTXCompanionFlow(file) {
             relId,
             target: cleanTarget,
             fileName: cleanTarget.split('/').pop(),
-            size
+            size,
+            videoUrl
           });
         }
       }
@@ -325,26 +444,78 @@ async function setupPPTXCompanionFlow(file) {
 
     pptxVideoCount.textContent = slideVideos.length;
     pptxVideoList.innerHTML = '';
+
     if (slideVideos.length > 0) {
+      if (pptxQuickActions) pptxQuickActions.style.display = 'flex';
+
       slideVideos.forEach((v) => {
-        const item = document.createElement('div');
-        item.className = 'video-card-item';
-        item.innerHTML = `
-          <div class="video-card-info">
-            <span class="video-card-title">Slide ${v.slideNum}: ${v.fileName}</span>
-            <span class="video-card-meta">Original Size: ${formatBytes(v.size)}</span>
+        state.pptxVideoPrefs[v.target] = 'compress';
+
+        const card = document.createElement('div');
+        card.className = 'video-interactive-card';
+        card.innerHTML = `
+          <div class="video-card-header">
+            <div class="video-card-title-group">
+              <span class="slide-num-pill">Slide ${v.slideNum}</span>
+              <span class="video-filename" title="${v.fileName}">${v.fileName}</span>
+            </div>
+            <span class="video-size-pill">${formatBytes(v.size)}</span>
           </div>
-          <div class="video-card-actions">
-            <select class="video-action-select" data-target="${v.target}">
-              <option value="compress" selected>Playable &amp; Compress</option>
-              <option value="keep">Playable Original</option>
-              <option value="flatten">Flatten (Remove Video)</option>
-            </select>
+
+          <div class="video-card-body">
+            <div class="video-preview-wrapper">
+              <span class="preview-label">🎬 Embedded Video Preview</span>
+              ${v.videoUrl 
+                ? `<video class="video-player-preview" controls preload="metadata" playsinline src="${v.videoUrl}"></video>`
+                : `<div class="video-player-preview" style="display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:0.75rem;">Preview unavailable</div>`
+              }
+            </div>
+            <div class="slide-preview-wrapper">
+              <span class="preview-label">📄 Slide Context Preview</span>
+              <canvas id="slideThumb_${v.slideNum}" class="slide-thumb-canvas" width="240" height="135"></canvas>
+            </div>
+          </div>
+
+          <div class="video-actions-segmented" data-target="${v.target}">
+            <button type="button" class="action-pill active" data-action="compress" title="Keep slide and video playable, re-encode video to reduce size">
+              ⚡ Compress &amp; Keep
+            </button>
+            <button type="button" class="action-pill" data-action="keep" title="Keep slide and video playable with original untouched video quality">
+              🛡️ Keep Original
+            </button>
+            <button type="button" class="action-pill" data-action="flatten" title="Flatten this slide into a static screenshot like the rest of the presentation">
+              🖼️ Flatten Slide
+            </button>
           </div>
         `;
-        pptxVideoList.appendChild(item);
+        pptxVideoList.appendChild(card);
+
+        // Draw initial placeholder on thumb canvas
+        const canvas = card.querySelector(`#slideThumb_${v.slideNum}`);
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#111';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#666';
+          ctx.font = '11px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Awaiting Companion PDF', canvas.width / 2, canvas.height / 2);
+        }
+
+        // Add pill click listeners
+        card.querySelectorAll('.action-pill').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const action = btn.dataset.action;
+            state.pptxVideoPrefs[v.target] = action;
+            card.querySelectorAll('.action-pill').forEach(b => {
+              b.classList.toggle('active', b === btn);
+            });
+            updatePPTXSummaryBanner();
+          });
+        });
       });
     } else {
+      if (pptxQuickActions) pptxQuickActions.style.display = 'none';
       pptxVideoList.innerHTML = `
         <div style="font-size:0.8rem; color: var(--text-secondary); padding: 8px 0;">
           No embedded videos detected in this presentation. All ${orderedSlides.length} slides will be flattened into screenshots.
@@ -352,6 +523,7 @@ async function setupPPTXCompanionFlow(file) {
       `;
     }
 
+    updatePPTXSummaryBanner();
     pptxModal.classList.remove('hidden');
 
   } catch (err) {
@@ -398,21 +570,46 @@ async function handleCompanionPdf(file) {
       pptxPdfStatus.textContent = `✓ Perfect match! ${pdfDoc.numPages} PDF pages match ${expectedPages} slides.`;
       pptxPdfDropLabel.textContent = `Selected: ${file.name} (${pdfDoc.numPages} pages)`;
       btnProceedPptxModal.disabled = false;
+      updatePPTXSummaryBanner();
+
+      // Render slide context preview thumbnails
+      if (state.pptxContext && state.pptxContext.slideVideos) {
+        for (const v of state.pptxContext.slideVideos) {
+          try {
+            const page = await pdfDoc.getPage(v.slideNum);
+            const thumbCanvas = document.getElementById(`slideThumb_${v.slideNum}`);
+            if (thumbCanvas) {
+              const viewport = page.getViewport({ scale: 0.35 });
+              thumbCanvas.width = viewport.width;
+              thumbCanvas.height = viewport.height;
+              const tCtx = thumbCanvas.getContext('2d');
+              tCtx.fillStyle = '#ffffff';
+              tCtx.fillRect(0, 0, thumbCanvas.width, thumbCanvas.height);
+              await page.render({ canvasContext: tCtx, viewport }).promise;
+            }
+          } catch (renderErr) {
+            console.warn('Could not render slide thumbnail for slide ' + v.slideNum, renderErr);
+          }
+        }
+      }
     } else {
       state.companionPdfDoc = null;
       pptxPdfStatus.className = 'modal-status-badge error';
       pptxPdfStatus.textContent = `❌ Page mismatch: PDF has ${pdfDoc.numPages} page(s), but PPTX has ${expectedPages} slides.`;
       btnProceedPptxModal.disabled = true;
+      updatePPTXSummaryBanner();
     }
   } catch (err) {
     console.error(err);
     pptxPdfStatus.className = 'modal-status-badge error';
     pptxPdfStatus.textContent = '❌ Error loading PDF: ' + err.message;
     btnProceedPptxModal.disabled = true;
+    updatePPTXSummaryBanner();
   }
 }
 
 btnCancelPptxModal.addEventListener('click', () => {
+  revokePreviewVideoUrls();
   pptxModal.classList.add('hidden');
   resetAll();
 });
@@ -420,11 +617,14 @@ btnCancelPptxModal.addEventListener('click', () => {
 btnProceedPptxModal.addEventListener('click', () => {
   if (!state.companionPdfDoc) return;
 
-  // Collect video preferences
-  state.pptxVideoPrefs = {};
-  document.querySelectorAll('.video-action-select').forEach(sel => {
-    state.pptxVideoPrefs[sel.dataset.target] = sel.value;
-  });
+  // Ensure all videos have a preference set
+  if (state.pptxContext && state.pptxContext.slideVideos) {
+    state.pptxContext.slideVideos.forEach(v => {
+      if (!state.pptxVideoPrefs[v.target]) {
+        state.pptxVideoPrefs[v.target] = 'compress';
+      }
+    });
+  }
 
   pptxModal.classList.add('hidden');
 
@@ -995,6 +1195,23 @@ async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetByt
 
     const freshZip = await JSZip.loadAsync(inputBytes);
 
+    // Ensure [Content_Types].xml supports JPG/JPEG MIME types
+    let contentTypes = await freshZip.file('[Content_Types].xml')?.async('text');
+    if (contentTypes) {
+      let modifiedTypes = false;
+      if (!contentTypes.includes('Extension="jpg"') && !contentTypes.includes('Extension="JPG"')) {
+        contentTypes = contentTypes.replace('</Types>', '  <Default Extension="jpg" ContentType="image/jpeg"/>\n</Types>');
+        modifiedTypes = true;
+      }
+      if (!contentTypes.includes('Extension="jpeg"') && !contentTypes.includes('Extension="JPEG"')) {
+        contentTypes = contentTypes.replace('</Types>', '  <Default Extension="jpeg" ContentType="image/jpeg"/>\n</Types>');
+        modifiedTypes = true;
+      }
+      if (modifiedTypes) {
+        freshZip.file('[Content_Types].xml', contentTypes);
+      }
+    }
+
     // Apply pre-compressed videos
     for (const [target, vBytes] of Object.entries(compressedVideoCache)) {
       freshZip.file(target, vBytes, {
@@ -1003,10 +1220,22 @@ async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetByt
       });
     }
 
-    // List of active media to keep (prevents deleting active videos)
+    // List of active media to keep (prevents deleting active videos & their preview posters)
     const activeMediaToKeep = new Set();
     for (const [sIdx, vInfo] of videoExceptionSlides.entries()) {
       activeMediaToKeep.add(vInfo.target.toLowerCase());
+      const preservedSlidePath = orderedSlides[sIdx];
+      const preservedRelsPath = preservedSlidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+      const relsFile = freshZip.file(preservedRelsPath);
+      if (relsFile) {
+        const relsText = await relsFile.async('text');
+        const targetRegex = /Target="([^"]+)"/gi;
+        let tm;
+        while ((tm = targetRegex.exec(relsText)) !== null) {
+          let t = tm[1].replace(/^\.\.\//, 'ppt/');
+          activeMediaToKeep.add(t.toLowerCase());
+        }
+      }
     }
 
     // Render each slide from PDF
@@ -1031,9 +1260,10 @@ async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetByt
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvasContext: ctx, viewport }).promise;
 
-      const dataURL = canvas.toDataURL('image/jpeg', currentQuality / 100);
-      const b64 = dataURL.split(',')[1];
-      const jpgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      // Extract high-quality binary JPEG bytes safely via canvas.toBlob
+      const jpgBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', currentQuality / 100));
+      const jpgBuffer = await jpgBlob.arrayBuffer();
+      const jpgBytes = new Uint8Array(jpgBuffer);
 
       const bgRelPath = `../media/slide_bg_${i}.jpg`;
       const bgZipPath = `ppt/media/slide_bg_${i}.jpg`;
@@ -1044,7 +1274,7 @@ async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetByt
         compressionOptions: { level: 9 },
       });
 
-      // Update slide rels
+      // Update slide rels with numeric rId2 (strictly required by PowerPoint)
       let layoutTarget = '../slideLayouts/slideLayout1.xml';
       const origRelsFile = freshZip.file(relsPath);
       if (origRelsFile) {
@@ -1056,11 +1286,11 @@ async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetByt
       const flatRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="${layoutTarget}"/>
-  <Relationship Id="rIdBg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${bgRelPath}"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${bgRelPath}"/>
 </Relationships>`;
       freshZip.file(relsPath, flatRelsXml);
 
-      // Update slide XML (full-bleed picture, all animations removed)
+      // Update slide XML (full-bleed screenshot, r:embed="rId2", all animations/shapes removed)
       const flatSlideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
@@ -1085,7 +1315,7 @@ async function compressPPTXDeepFlatten(inputBytes, pdfDoc, videoPrefs, targetByt
           <p:nvPr/>
         </p:nvPicPr>
         <p:blipFill>
-          <a:blip r:embed="rIdBg"/>
+          <a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId2"/>
           <a:stretch><a:fillRect/></a:stretch>
         </p:blipFill>
         <p:spPr>
@@ -1529,6 +1759,7 @@ btnDownload.addEventListener('click', triggerDownload);
 btnReset.addEventListener('click', resetAll);
 
 function resetAll() {
+  revokePreviewVideoUrls();
   state.file        = null;
   state.fileBytes   = null;
   state.resultBlob  = null;
